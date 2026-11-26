@@ -16,6 +16,30 @@ static void fixture(int identity, int overlap)
     if (overlap) fputs("ram=0x400080,0x100\n", f);
     CHECK(fclose(f) == 0);
 }
+static void ram_boot_image(Machine *m)
+{
+    const char *config = "build/machine-fixture.cfg";
+    FILE *f;
+    fixture(0, 0); /* Reuse the 32-byte instruction program as the RAM contents. */
+    f = fopen(config, "w"); CHECK(f != NULL);
+    fputs("ram=0x400000,0x100,machine-fixture.bin\nreset=0x400000\n", f);
+    CHECK(fclose(f) == 0);
+    CHECK(machine_load(m, config, NULL, NULL));
+    CHECK(m->rom_count == 0 && m->cpu.r[15] == 0x400000);
+    CHECK(machine_step(m, 0) && m->cpu.r[0] == 0x2ffa);
+    CHECK(bus_read(&m->bus, 0x400020, 4) == 0);
+    bus_write(&m->bus, 0x400000, 4, 0xe3a00001); /* MOV r0, #1 */
+    m->cpu.r[15] = 0x400000;
+    CHECK(machine_step(m, 0) && m->cpu.r[0] == 1 && !m->bus.faults);
+    CHECK(machine_load(m, config, NULL, NULL));
+    CHECK(machine_step(m, 0) && m->cpu.r[0] == 0x2ffa); /* Reset restores the image. */
+
+    f = fopen(config, "w"); CHECK(f != NULL);
+    fputs("ram=0x400000,0x10,machine-fixture.bin\nreset=0x400000\n", f);
+    CHECK(fclose(f) == 0);
+    CHECK(!machine_load(m, config, NULL, NULL));
+    CHECK(!m->loaded && !m->bus.count);
+}
 typedef struct {unsigned calls;uint64_t last;} AudioProbe;
 static void java_network_config(void)
 {
@@ -197,6 +221,7 @@ int main(void)
         fputs("irom_service=0x8077c,memcpy\nirom_vector=0x8003c,0x8077c\n",f);CHECK(!fclose(f));
         CHECK(!machine_load(&m,"build/machine-fixture.cfg",NULL,NULL)); /* not Thumb */
     }
+    ram_boot_image(&m);
     clock_equivalence();java_network_config();
     printf("Machine/frontend backend: %u checks passed.\n", checks); return 0;
 }

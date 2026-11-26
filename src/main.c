@@ -21,6 +21,7 @@ int main(int argc, char **argv)
     unsigned watch_count = 0;
     const char *model;
     const char *lcd_output = NULL;
+    const char *uart_output = NULL;
     const char *import_path = NULL;
     int java_menu=0,rtc_sync=0,high_priority=0,charging=0,java_extended=0;
     unsigned battery_percent=100;
@@ -32,8 +33,8 @@ int main(int argc, char **argv)
     int persistent = 1, storage_ready = 0, sim_override = -1;
     FirmwareMatch *matches = NULL;
     unsigned first_argument = 2;
-    FILE *trace = NULL, *access_log = NULL, *log;
-    if (argc < 2) { puts("sghemu MODEL.cfg | --folder PATH [instruction-budget] [--lcd-out FILE.bmp]\nOptions: --continue-unmapped --trace --mmio-trace --until ADDRESS --service\n         --nv-load FILE.snv --nv-save FILE.snv (diagnostic import/export)\n         --state-dir DIRECTORY --no-persist --sim present|none\n         --ma5-hw M5_EmuHw.dll [--audio-wav FILE.wav]\n         --audio-ticks-hz N (legacy profiles only, not CPU MHz)\n         --fs-list FILE.tsv (directory metadata, not file contents)\n         --import FILE (sound/picture or MIDP 1.0 JAR through the guest)\n         --java-menu (boot the native installed-MIDlet menu)\n         --extended-java (optional larger Java working buffers)\n         --rtc-sync --high-priority --battery 0..100 --charging\nNVM auto-loads/saves beside the model config in state/. Run from repo root; see build/unmapped.log."); return 2; }
+    FILE *trace = NULL, *access_log = NULL, *uart_log = NULL, *log;
+    if (argc < 2) { puts("sghemu MODEL.cfg | --folder PATH [instruction-budget] [--lcd-out FILE.bmp]\nOptions: --continue-unmapped --trace --mmio-trace --until ADDRESS --service\n         --uart-out FILE (bytes sent by the model's serial port)\n         --nv-load FILE.snv --nv-save FILE.snv (diagnostic import/export)\n         --state-dir DIRECTORY --no-persist --sim present|none\n         --ma5-hw M5_EmuHw.dll [--audio-wav FILE.wav]\n         --audio-ticks-hz N (legacy profiles only, not CPU MHz)\n         --fs-list FILE.tsv (directory metadata, not file contents)\n         --import FILE (sound/picture or MIDP 1.0 JAR through the guest)\n         --java-menu (boot the native installed-MIDlet menu)\n         --extended-java (optional larger Java working buffers)\n         --rtc-sync --high-priority --battery 0..100 --charging\nNVM auto-loads/saves beside the model config in state/. Run from repo root; see build/unmapped.log."); return 2; }
     model = argv[1];
     if (!strcmp(model, "--folder")) {
         unsigned count;
@@ -70,6 +71,7 @@ int main(int argc, char **argv)
         }
         else if (!strcmp(argv[i], "--state-dir") && i + 1 < (unsigned)argc) state_directory = argv[++i];
         else if (!strcmp(argv[i], "--lcd-out") && i + 1 < (unsigned)argc) lcd_output = argv[++i];
+        else if (!strcmp(argv[i], "--uart-out") && i + 1 < (unsigned)argc) uart_output = argv[++i];
         else if(!strcmp(argv[i],"--fs-list")&&i+1<(unsigned)argc)fs_output=argv[++i];
         else if (!strcmp(argv[i], "--nv-load") && i + 1 < (unsigned)argc) nv_input = argv[++i];
         else if (!strcmp(argv[i], "--nv-save") && i + 1 < (unsigned)argc) nv_output = argv[++i];
@@ -153,6 +155,12 @@ int main(int argc, char **argv)
             }
         }
     }
+    if (uart_output) {
+        if (!m.sds_uart.attached) { fprintf(stderr, "This model has no serial port to capture.\n"); result = 1; goto done; }
+        uart_log = fopen(uart_output, "wb");
+        if (!uart_log) { fprintf(stderr, "Cannot open UART output: %s\n", uart_output); result = 1; goto done; }
+        m.sds_uart.tx_log = uart_log;
+    }
     while (m.cpu.instructions < budget) {
         if(rtc_sync&&!(m.cpu.instructions&65535u)){
             rtc_set_sync(&m.rtc,1);(void)host_sync_rtc(&m.rtc);
@@ -169,6 +177,7 @@ int main(int argc, char **argv)
                 !nvram_store_open(&storage, &m, state_directory)) { fprintf(stderr, "%s\n", m.error); storage_ready = 0; result = 1; break; }
             if(*sim_storage&&!sim_card_load_storage(&m.sim.card,sim_storage)){*sim_storage=0;fprintf(stderr,"%s\n",m.sim.card.error);result=1;break;}
             storage.defaults_boot = initialize_defaults;
+            m.sds_uart.tx_log = uart_log;
             if(sim_override>=0)m.sim.present=sim_override;
             battery_set(&m.battery,battery_percent,charging);
             if(hardware_dll&&!ma3_enable(&m.ma3,hardware_dll,audio_wav,!audio_wav,m.clock.attached?1000000000:audio_ticks_hz)){fprintf(stderr,"MA-3 hardware: %s\n",m.ma3.error);result=1;break;}
@@ -234,6 +243,10 @@ int main(int argc, char **argv)
 done:
     if (storage_ready && !nvram_store_flush(&storage, &m)) { fprintf(stderr, "%s\n", m.error); result = 1; }
     if(*sim_storage&&!sim_card_save_storage(&m.sim.card,sim_storage)){fprintf(stderr,"%s\n",m.sim.card.error);result=1;}
+    if (uart_log) {
+        int failed = ferror(uart_log);
+        if (fclose(uart_log) || failed) { fprintf(stderr, "Cannot write UART output: %s\n", uart_output); result = 1; }
+    }
     nvram_store_release(&storage); content_import_release(&content);
     if (trace) fclose(trace); machine_destroy(&m); if (access_log) fclose(access_log); fclose(log); free(matches); return result;
 }

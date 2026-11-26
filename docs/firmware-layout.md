@@ -34,7 +34,8 @@ Explicit import overrides are absolute. Configuration directives:
 |---|---|
 | `name=text`, `reset=address` | Identity label and reset PC |
 | `rom=base,path[,mapped_size]` | Load ROM; optional erased FF padding |
-| `ram=base,size`, `alias=base,source,size` | Memory map; overlaps rejected |
+| `ram=base,size[,path]` | Writable RAM; optional raw load image at the base, zero-filled remainder. A RAM image can boot without a `rom` entry. |
+| `alias=base,source,size` | Mirror a mapped memory region; overlaps rejected |
 | `display=width,height`, `audio=silent` | Host display and audio backend |
 | `flash=base,manufacturer,device` | x16 flash interface on a mapped ROM |
 | `nvram=base,size` | Optional snapshot window within a flash bank's padded tail; must not overlap supplied firmware bytes |
@@ -42,6 +43,7 @@ Explicit import overrides are absolute. Configuration directives:
 | `flash_geometry=base,offset,size,erase_size` | Override erase size for a flash subrange; after `flash`, nonoverlapping, covering whole default 64 KiB sectors |
 | `lcd_s6b33=command_port,data_port,origin_y` | Guest LCD interface/viewport |
 | `intc=base`, `periodic_irq=bit,period` | Interrupt routing and diagnostic tick source |
+| `sds_uart=base,cable` | CX805 UART; CLI `--uart-out FILE` captures transmitted bytes. Virtual loopback requires `--service` and `cable=1`. |
 | `ma3=base,irq_mask,sequence_quantum_ns` | MA-3 byte ports and interrupt source; model-specific divider time unit, 1157 ns inferred from C100 SetSpeed |
 | `pmic=base,byte_address`, `pmic_register=index,value` | Observed serial pins and provisional initial PMIC state |
 | `identity16=address,value` | Explicit read-only diagnostic input fixture |

@@ -14,6 +14,7 @@
 typedef struct {
     Bus *bus;
     Intc *intc;
+    FILE *tx_log;        /* Optional capture of bytes sent by the guest. */
     uint32_t base;
     uint16_t regs[0x18]; /* 0x41200..0x4122E, halfword indexed */
     int cable;           /* virtual service cable attached: loopback the byte */
