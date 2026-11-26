@@ -1,5 +1,7 @@
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
+#ifndef _WIN32
+#define _POSIX_C_SOURCE 200809L
+#endif
+#include "net_host.h"
 #include "phone_net.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,10 +30,10 @@ int main(void)
      for(i=0;i<strlen(url);++i)bus_write(bus,0x6606+i,1,(uint8_t)url[i]);}
     bus_write(bus,0x7000,4,n);CHECK(phone_net_hle(&net,cell,&cpu)&&cpu.r[0]==0&&net.transmitted==1);
     for(i=0;i<24;++i)bus_write(bus,0x721e + i,1,0xa5); /* Beyond the native 30-byte container. */
-    for(i=0;i<200;++i){phone_net_advance(&net,cell);if(cell->count<2){Sleep(5);continue;}
+    for(i=0;i<200;++i){phone_net_advance(&net,cell);if(cell->count<2){net_sleep(5);continue;}
         cpu.r[15]=net.recv_pdu;cpu.r[0]=0;cpu.r[2]=0x7200;cpu.r[3]=0x7500;
         bus_write(bus,0x7000,4,0x7400);bus_write(bus,0x7400,4,2048);
-        CHECK(phone_net_hle(&net,cell,&cpu));if(!cpu.r[0]){received=1;break;}Sleep(5);}
+        CHECK(phone_net_hle(&net,cell,&cpu));if(!cpu.r[0]){received=1;break;}net_sleep(5);}
     CHECK(received&&net.received==1);CHECK(bus_read(bus,0x7400,4)>16);
     CHECK(bus_read(bus,0x7500,1)==0x16&&bus_read(bus,0x7503,1)==4&&bus_read(bus,0x7504,1)==0x20);
     CHECK(bus_read(bus,0x7202,1)==0x23&&bus_read(bus,0x7203,1)==0xf1);
@@ -45,7 +47,7 @@ int main(void)
     cpu.r[15]=net.send_pdu;cpu.r[0]=0;cpu.r[1]=0x2136;cpu.r[2]=0x6400;cpu.r[3]=0x6600;
     bus_write(bus,0x6602,1,2);bus_write(bus,0x7000,4,n);
     CHECK(phone_net_hle(&net,cell,&cpu)&&cpu.r[0]==0);
-    for(i=0;i<200&&cell->count<3;++i){phone_net_advance(&net,cell);Sleep(5);}
+    for(i=0;i<200&&cell->count<3;++i){phone_net_advance(&net,cell);net_sleep(5);}
     CHECK(cell->count==3);
     cpu.r[15]=net.recv_pdu;cpu.r[0]=0;cpu.r[2]=0x7200;cpu.r[3]=0x7500;
     bus_write(bus,0x7000,4,0x7400);bus_write(bus,0x7400,4,2048);

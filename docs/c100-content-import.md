@@ -3,14 +3,16 @@
 ## Current importer (2026-10-13)
 
 Implemented for **C100 XEDK1** through model-declared guest entry points. Use the
-filesystem manager's **Import content...** button, or CLI `--import FILE`.
+filesystem manager's **Add files...** and **Import queue >>** buttons, or CLI
+`--import FILE`.
 Storage is the ordinary automatically saved firmware-specific NVM snapshot;
 the firmware, not the host, constructs its filesystem records.
 
 * Sounds retain the existing type-6 guest writer path.
-* Windows WIC decodes PNG/JPEG/GIF/BMP pictures and uses the first frame of
-  animated inputs. Linux decodes uncompressed 24- and 32-bit BMP files.
-  Both paths fit the picture proportionally inside 128 x 128 and convert it to RGB565.
+* Windows WIC and the Linux Qt GUI decode PNG/JPEG/GIF/BMP pictures and use the
+  first frame of animated inputs. The Linux CLI decodes uncompressed 24- and
+  32-bit BMP files. Each path fits the picture proportionally inside 128 x 128
+  and converts it to RGB565.
   The native container has a nine-byte animation header (width, height,
   animation flag, frame count, reserved byte, little-endian bitmap-body length),
   followed by a two-byte format/palette header and little-endian RGB565 pixels.

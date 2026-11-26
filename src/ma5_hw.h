@@ -1,6 +1,9 @@
 #ifndef SGH_MA5_HW_H
 #define SGH_MA5_HW_H
 #include <stdint.h>
+#ifdef _WIN32
+#include <stddef.h>
+#endif
 typedef struct Ma5Hw Ma5Hw;
 typedef struct { uint64_t commands,generate_ticks,other_ticks; } Ma5HwProfile;
 void ma5_hw_profile_enable(Ma5Hw *hw,int enabled);
@@ -9,6 +12,9 @@ typedef void (*Ma5PcmMixer)(void *,int16_t *,int16_t *,unsigned);
 typedef struct { uint64_t frames, nonzero, callbacks, underruns, adpcm_refreshes; unsigned peak; int failed; } Ma5HwStats;
 /* All DLL entry points, including load/init/terminate, run on one worker. */
 Ma5Hw *ma5_hw_open(const char *dll, const char *wav, int speakers, char *error, unsigned error_size);
+#ifdef _WIN32
+Ma5Hw *ma5_hw_open_wide(const wchar_t *dll, const char *wav, int speakers, char *error, unsigned error_size);
+#endif
 unsigned ma5_hw_read(Ma5Hw *hw, int data);
 void ma5_hw_write(Ma5Hw *hw, int data, unsigned value);
 void ma5_hw_fifo(Ma5Hw *hw,unsigned selector,const uint8_t *bytes,unsigned length);

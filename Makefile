@@ -18,9 +18,9 @@ endif
 
 # Only ROM_TESTS need firmware files. `make check` runs CHECK_TESTS.
 CHECK_TESTS := adpcm bus_data cellular content cpu cpu_cache cpu_diff dsp_mailbox \
-               firmware gpio irom jar key_text keypad lp_timer ma3 ma_detune ma_water \
-               machine machine_run nvram peripheral peripheral_schedule phone_io rtc \
-               sim userfs wap
+               firmware gpio irom jar java_net key_text keypad lp_timer ma3 ma_detune ma_water \
+               machine machine_run nvram peripheral peripheral_schedule phone_io phone_net rtc \
+               sim userfs wap wap_http wap_paging
 ROM_TESTS := c100_boot c100_charger c100_compat c100_identity c100_keypad c100_sim
 TOOLS := fwinspect jarinspect phoneprobe
 
@@ -33,8 +33,9 @@ CC := cl
 OBJ := obj
 EXE := .exe
 PORT_SRC := src/port_win32.c
-BACKENDS := src/java_net.c src/phone_net.c src/wap_http.c src/ma5_hw.c
-CHECK_TESTS += gui_profile java_net phone_net wap_http wap_paging
+WAP_HTTP_SRC := src/wap_http.c
+BACKENDS := src/ma5_hw.c
+CHECK_TESTS += gui_profile
 TOOLS += cpubench ma3pcmprobe ma5hwprobe ma5probe ma5seqprobe perfbench phonedrive
 
 CPPFLAGS += /D_CRT_SECURE_NO_WARNINGS /D_WIN32_WINNT=0x0601 /Isrc
@@ -59,7 +60,11 @@ link = $(CC) /nologo /Fe"$@" $(filter %.$(OBJ),$^) /link /MACHINE:X86 \
 else ifeq ($(PLATFORM),linux)
 OBJ := o
 PORT_SRC := src/port_posix.c
-BACKENDS := src/net_stub.c src/ma5_hw_stub.c
+WAP_HTTP_SRC := src/wap_http_curl.c
+BACKENDS := src/ma5_hw_wine.c src/alsa_pcm.c
+PCM_SRC := src/alsa_pcm.c
+PKG_CONFIG ?= pkg-config
+MA5_CC ?= i686-w64-mingw32-gcc
 
 CPPFLAGS += -Isrc
 CFLAGS += -std=c17 -Wall -Wextra
@@ -71,12 +76,14 @@ else
 CFLAGS += -O2
 CXXFLAGS += -O2
 endif
-LDLIBS += -lm
+LDLIBS += -lm -pthread
 
 native_path = $(1)
 make_directory = mkdir -p "$@"
 compile = $(CC) $(CPPFLAGS) $(CFLAGS) -MMD -MP -c "$<" -o "$@"
-link = $(CC) $(LDFLAGS) $(filter %.$(OBJ),$^) -o "$@" $(LDLIBS)
+link = $(CC) $(LDFLAGS) $(filter %.$(OBJ),$^) -o "$@" $(LDLIBS) $(call host_libs,$^)
+host_libs = $(if $(filter %/wap_http_curl.o,$(1)),$$($(PKG_CONFIG) --libs libcurl)) \
+            $(if $(filter %/alsa_pcm.o,$(1)),$$($(PKG_CONFIG) --libs alsa))
 else
 $(error PLATFORM must be linux or windows)
 endif
@@ -88,7 +95,7 @@ NVRAM_SRC := src/nvram.c src/firmware.c src/sha256.c $(PORT_SRC)
 MACHINE_SRC := $(addprefix src/,machine.c lp_timer.c cellular.c wap_gateway.c phone_io.c \
                rtc.c battery.c dsp_mailbox.c gpio.c keypad.c sim.c sim_card.c sds_uart.c \
                sds_dma.c ma3.c irom.c flash.c lcd.c intc.c pmic.c file.c) \
-               $(CPU_SRC) $(PORT_SRC) $(BACKENDS)
+                $(CPU_SRC) $(PORT_SRC) src/java_net.c src/phone_net.c $(WAP_HTTP_SRC) $(BACKENDS)
 APP_SRC := $(MACHINE_SRC) $(NVRAM_SRC) $(JAR_SRC) src/content.c src/host.c src/userfs.c
 
 # Some tests supply their own implementations (for example ma3_test stubs out MA-5).
@@ -111,7 +118,7 @@ TEST_SRC_machine_run         := $(MACHINE_SRC)
 TEST_SRC_nvram               := $(MACHINE_SRC) $(NVRAM_SRC)
 TEST_SRC_peripheral          := src/lcd.c src/flash.c src/intc.c src/pmic.c $(CPU_SRC) src/file.c
 TEST_SRC_peripheral_schedule := src/sim.c src/sim_card.c src/sds_dma.c src/sds_uart.c src/intc.c src/bus.c $(PORT_SRC)
-TEST_SRC_phone_io            := src/gpio.c src/phone_io.c $(CPU_SRC)
+TEST_SRC_phone_io            := src/gpio.c src/phone_io.c $(PCM_SRC) $(CPU_SRC)
 TEST_SRC_rtc                 := src/rtc.c src/bus.c
 TEST_SRC_sim                 := src/sim.c src/sim_card.c src/intc.c src/bus.c $(PORT_SRC)
 TEST_SRC_userfs              := src/userfs.c src/bus.c src/file.c
@@ -124,9 +131,9 @@ TEST_SRC_c100_keypad         := $(MACHINE_SRC) $(NVRAM_SRC)
 TEST_SRC_c100_sim            := $(MACHINE_SRC) $(NVRAM_SRC)
 TEST_SRC_gui_profile         := $(APP_SRC)
 TEST_SRC_java_net            := src/java_net.c $(TEST_SRC_cellular)
-TEST_SRC_phone_net           := src/phone_net.c src/wap_gateway.c src/wap_http.c $(TEST_SRC_java_net)
-TEST_SRC_wap_http            := src/wap_http.c
-TEST_SRC_wap_paging          := src/wap_http.c
+TEST_SRC_phone_net           := src/phone_net.c src/wap_gateway.c $(WAP_HTTP_SRC) $(TEST_SRC_java_net)
+TEST_SRC_wap_http            := $(WAP_HTTP_SRC)
+TEST_SRC_wap_paging          := $(WAP_HTTP_SRC)
 
 TOOL_SRC_cpubench    := tests/arm7_reference.c $(CPU_SRC)
 TOOL_SRC_fwinspect   := src/file.c
@@ -182,16 +189,33 @@ endif
 HEADERS := $(wildcard src/*.h tests/*.h third_party/puff/*.h)
 else
 # Only `make gui` needs Qt 5. Compile the frontend as C++, reuse the C core.
-PKG_CONFIG ?= pkg-config
 GUI_BIN := $(BUILD)/sghemu-gui
 gui: $(GUI_BIN)
 
-$(BUILD)/src/gui_qt.o: src/gui_qt.cpp Makefile | $(BUILD)/src
+QT_OBJ := $(addprefix $(BUILD)/src/,gui_qt.o gui_qt_tools.o gui_qt_fs.o)
+$(QT_OBJ): $(BUILD)/src/%.o: src/%.cpp Makefile | $(BUILD)/src
 	@$(PKG_CONFIG) --exists Qt5Widgets || { echo "Install the Qt 5 Widgets development files (Qt5Widgets.pc)." >&2; exit 1; }
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -fPIC $$($(PKG_CONFIG) --cflags Qt5Widgets) -MMD -MP -c "$<" -o "$@"
 
-$(GUI_BIN): $(BUILD)/src/gui_qt.o $(call objects,$(MACHINE_SRC) $(NVRAM_SRC))
-	$(CXX) $(LDFLAGS) $^ -o "$@" $$($(PKG_CONFIG) --libs Qt5Widgets) $(LDLIBS)
+$(GUI_BIN): $(QT_OBJ) $(call objects,$(APP_SRC))
+	$(CXX) $(LDFLAGS) $^ -o "$@" $$($(PKG_CONFIG) --libs Qt5Widgets) $(LDLIBS) $(call host_libs,$^)
+
+$(BUILD)/src/wap_http_curl.o: src/wap_http_curl.c Makefile | $(BUILD)/src
+	@$(PKG_CONFIG) --exists libcurl || { echo "Install the libcurl development files (libcurl.pc)." >&2; exit 1; }
+	$(CC) $(CPPFLAGS) $(CFLAGS) $$($(PKG_CONFIG) --cflags libcurl) -MMD -MP -c "$<" -o "$@"
+
+$(BUILD)/src/alsa_pcm.o: src/alsa_pcm.c Makefile | $(BUILD)/src
+	@$(PKG_CONFIG) --exists alsa || { echo "Install the ALSA development files (alsa.pc)." >&2; exit 1; }
+	$(CC) $(CPPFLAGS) $(CFLAGS) $$($(PKG_CONFIG) --cflags alsa) -MMD -MP -c "$<" -o "$@"
+
+# The optional Yamaha DLL is x86 Windows code. Compile the same Win32 MA
+# backend into a small Wine helper; Qt and the CLI themselves stay native.
+.PHONY: ma5-helper
+ma5-helper: $(BUILD)/ma5bridge.exe
+$(BUILD)/ma5bridge.exe: tools/ma5bridge.c src/ma5_hw.c src/file.c src/ma5_bridge.h \
+                      src/ma5_hw.h src/adpcm.h src/ma_detune.h src/ma_water.h src/file.h Makefile | $(BUILD)
+	$(MA5_CC) -Isrc -D_WIN32_WINNT=0x0601 -std=c17 -O2 -static $(filter %.c,$^) \
+		-o "$@" -lbcrypt -lversion -lwinmm
 endif
 
 # Runtime logs and test fixtures use build/ even with a custom BUILD path.

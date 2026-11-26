@@ -104,7 +104,7 @@ ARM interpreter. Audio backpressure still supplies pacing when output is active.
 ## Experimental packet-data bridge
 
 `src/phone_net.c` bridges recovered native WAP transport calls to a dedicated
-Windows networking thread. Internet mode forwards native UDP datagrams to the
+networking thread on Windows and Linux. Internet mode forwards native UDP datagrams to the
 configured external gateway; it does not provide an external WAP gateway itself.
 Built-in mode handles non-secure WAP traffic on UDP port 9201 locally and forwards
 other UDP traffic normally. One gateway endpoint is tracked per bearer.
@@ -116,7 +116,7 @@ flag rearms delivery when subsequent replies arrive.
 The small C gateway uses the WAPWarp project's WTP/WSP framing approach without
 requiring Python at runtime. It supports class-2 requests, duplicate-request
 caching, bounded transactions, segmented results, acknowledgements, retries and
-GET/HEAD. Windows WinHTTP supplies HTTP/HTTPS retrieval. Text/HTML/basic WML is
+GET/HEAD. HTTP/HTTPS retrieval uses WinHTTP on Windows and libcurl on Linux. Text/HTML/basic WML is
 converted to a simple WBXML card with text/links; already-compiled WMLC and small
 binary files can pass through. Converted text/HTML uses independently fetchable
 **Prev/Next** pages capped at **1,200 compiled bytes**, including navigation.

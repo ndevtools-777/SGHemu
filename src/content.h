@@ -27,6 +27,13 @@ typedef struct {
     Arm7 caller;
     char error[160];
 } ContentImport;
+typedef int (*ContentPictureDecoder)(ContentImport *import);
+/* A frontend may supply its own decoder. The guest container and import
+   path are the same as for the built-in host decoder. */
+int content_import_open_decoded(ContentImport *im, Machine *m, const char *path,
+    ContentPictureDecoder decode);
+int content_picture_rgb(ContentImport *im, unsigned width, unsigned height,
+    const uint8_t *rgb, size_t stride);
 /* Read `path` and take the guest entries from the model. Returns 0 with a
    message in im->error when the model cannot import or the file is unusable. */
 int content_import_open(ContentImport *im, Machine *m, const char *path);

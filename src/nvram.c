@@ -234,10 +234,28 @@ int nvram_store_flush(NvramStore *s, Machine *m)
 
 int nvram_store_import(NvramStore *s, Machine *m, const char *path)
 {
+    uint8_t *previous;
+    int provision;
+    unsigned stage;
     if (!s->active) return fail(m, "no active storage session");
-    if (!nvram_load(m, path)) return 0;
+    previous = malloc(m->nvram_size);
+    if (!previous) return fail(m, "allocation failed");
+    memcpy(previous, m->nvram_data, m->nvram_size);
+    if (!nvram_load(m, path)) {
+        free(previous);
+        return 0;
+    }
+    provision = s->provision; stage = s->stage;
     s->provision = 0; s->stage = 0;
-    return nvram_store_flush(s, m);
+    if (!nvram_store_flush(s, m)) {
+        /* A later automatic save must not commit a failed import. */
+        memcpy(m->nvram_data, previous, m->nvram_size);
+        s->provision = provision; s->stage = stage;
+        free(previous);
+        return 0;
+    }
+    free(previous);
+    return 1;
 }
 
 int nvram_store_step(NvramStore *s, Machine *m)
