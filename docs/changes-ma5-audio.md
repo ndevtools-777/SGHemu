@@ -3,7 +3,7 @@
 Historical investigation notes originally comparing a working tree against
 `779b800`. The original scope, check counts and candidate changes below are not
 a description of the current release. Current builds must return exit code 0;
-see [current audio notes](ma5-audio.md) and the README for supported behavior.
+see the [current audio options](../README.md#ma-audio) for supported behavior.
 Everything is quadratic-free: every source change is either a behaviour fix or a
 diagnostic gated behind an environment variable, so normal runs are unchanged.
 

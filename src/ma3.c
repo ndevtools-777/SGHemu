@@ -1,372 +1,600 @@
 #include "ma3.h"
-#include "ma_water.h"
 #include <string.h>
-static void reset_parameters(Ma3 *m)
+
+enum { PACKET_DELAY, PACKET_ADDRESS, PACKET_LENGTH, PACKET_RAM, PACKET_PARAMETERS, PACKET_READ };
+enum { FRAME_ONLY, IMMEDIATE_WRITE, SEQUENCED_WRITE, READ_REQUEST };
+enum { TIMER_A_IRQ = 0x20, FIFO_IRQ = 0x80, FIFO_SERVICE_NS = 2000000 };
+#define NO_EVENT UINT64_MAX
+#define NS_PER_SECOND UINT64_C(1000000000)
+
+static uint64_t earlier(uint64_t a, uint64_t b)
 {
-    /* MA-3 parameter defaults explicitly checked by VerifyRegisters. These
-       differ from MA-5; model real state, not a forced success return. */
-    memset(m->parameter_ram,0,sizeof(m->parameter_ram));
-    memset(m->parameter_ram+0x90,0x60,16);memset(m->parameter_ram+0xa0,0x3c,16);
-    memset(m->parameter_ram+0x14a,0x40,8);
-    /* Color history belongs to the host indicator, not MA parameter RAM.
-       Keep it through chip resets (for example when switching songs). */
-    m->led_token=m->led_on=0;m->led_tick=0;
-    m->packet_phase=m->address_bytes=m->length_bytes=m->response_mask=0;
-    m->packet_address=m->packet_length=0;
-    m->delayed_length=m->delayed_phase=m->delayed_address=m->delayed_count=m->delayed_count_bytes=0;
-    m->sequence_divider=m->sequence_valid=0;
-    m->water_sample_burst=0;
+    return a < b ? a : b;
 }
-static void sequence_clock(Ma3 *m)
+
+static uint64_t sequence_deadline(const Ma3 *m)
 {
-    unsigned divider=m->sequence_divider;
-    if(!m->hw||!m->sequence_valid)return;
-    if(m->water){divider=(divider*(m->water_scale?m->water_scale:100)+50)/100;
-        if(divider<64)divider=64;if(divider>16383)divider=16383;}
-    ma5_hw_register(m->hw,0x23,divider>>6,m->bank);
-    ma5_hw_register(m->hw,0x24,(divider&63)<<2,m->bank);
-    /* Water can run between guest port accesses, including a register read
-       or a RAM packet. The helper leaves native selector 4 selected; restore
-       the guest's selection before its next data access. */
-    ma5_hw_write(m->hw,0,m->selector);
+    return m->fifo_count && (m->parameter_ram[0x161] & 1u) ? m->sequence_due : NO_EVENT;
 }
-static unsigned water_voice(Ma3 *m,unsigned address,unsigned value)
+
+static uint64_t fifo_deadline(const Ma3 *m)
 {
-    unsigned voice=address<0x90?address:address>=0xe0&&address<0x140?address-0xe0:UINT32_MAX;
-    /* Leave voice selection and note-gate fields alone; damage pitch and
-       expression payloads without redirecting a voice to arbitrary RAM. */
-    if(m->water&&voice!=UINT32_MAX&&voice%6>=2&&voice%6<=4){
-        uint32_t r=ma_water_random(&m->water_rng);
-        if((r&7u)==0){value^=1u<<((r>>8)%6);++m->water_faults;}
+    unsigned threshold = (m->parameter_ram[0x160] & 7u) * 64u;
+    if (m->fifo_count > threshold || (m->irq_flags & FIFO_IRQ)) return NO_EVENT;
+    return m->fifo_due < m->now ? m->now : m->fifo_due;
+}
+
+static uint64_t device_deadline(const Ma3 *m)
+{
+    uint64_t due = earlier(m->timers[0].due, m->timers[1].due);
+    due = earlier(due, sequence_deadline(m));
+    due = earlier(due, fifo_deadline(m));
+    if (m->water) due = earlier(due, m->water_next);
+    return due;
+}
+
+static void update_deadline(Ma3 *m)
+{
+    uint64_t due = device_deadline(m);
+    if (m->output && !m->stats.failed) due = earlier(due, m->now + FIFO_SERVICE_NS);
+    if (due == NO_EVENT || m->ticks_hz == NS_PER_SECOND) m->next_event = due;
+    else m->next_event = (due / NS_PER_SECOND) * m->ticks_hz +
+                         ((due % NS_PER_SECOND) * m->ticks_hz + NS_PER_SECOND - 1) / NS_PER_SECOND;
+}
+
+static unsigned irq_status(const Ma3 *m)
+{
+    return m->irq_flags & (m->parameter_ram[0x162] | FIFO_IRQ);
+}
+
+static void signal_irq(Ma3 *m)
+{
+    if ((m->selector & 0x80u) && irq_status(m) && !(m->intc->pending & m->irq_mask)) {
+        m->intc->pending |= m->irq_mask;
+        ++m->irq_events;
     }
-    return value; /* Keep terminator/channel bits and all address/length bytes. */
 }
-static unsigned water_sample(Ma3 *m,unsigned value)
+
+static void clear_fifo(Ma3 *m)
 {
-    unsigned result=value;
-    if(m->water){result=ma_water_sample_byte(&m->water_rng,&m->water_sample_burst,value);
-        if(result!=value)++m->water_faults;}
-    return result;
+    m->fifo_head = m->fifo_count = 0;
+    memset(&m->fifo_input, 0, sizeof(m->fifo_input));
+    memset(&m->delayed, 0, sizeof(m->delayed));
+    m->sequence_due = NO_EVENT;
+    m->sequence_wait = 0;
 }
-static unsigned translate_address(unsigned address)
+
+static void reset_chip(Ma3 *m)
 {
-    if(address<0x90)return address;
-    if(address<0x140)return address+0x30;
-    /* Native 1DE is a stored no-op. Use it as an exclusively owned LED marker
-       so the DLL sequences the toggle at its original delta, not FIFO receipt. */
-    if(address==0x146)return 0x1de;
-    /* Native bits 2/3 correspond to MA-3 SoftInt0/1. Translate ISR separately.
-       Keep payloads in the delayed FIFO, not immediate host callbacks. */
-    if(address>=0x15a&&address<=0x15d)return address+0x7c;
-    /* Explicit no-op commands emitted by MaSndDrv_Nop. */
-    if(address==0x148||address==0x166)return 0x1df;
-    return UINT32_MAX;
+    memset(m->parameter_ram, 0, sizeof(m->parameter_ram));
+    memset(m->parameter_ram + 0x90, 0x60, 16);
+    memset(m->parameter_ram + 0xa0, 0x3c, 16);
+    memset(m->parameter_ram + 0x14a, 0x40, 8);
+    memset(m->registers, 0, sizeof(m->registers));
+    memset(&m->immediate, 0, sizeof(m->immediate));
+    m->immediate.phase = PACKET_ADDRESS;
+    m->response_ready = m->irq_flags = 0;
+    m->timers[0].due = m->timers[1].due = NO_EVENT;
+    m->timers[0].period = m->timers[1].period = 0;
+    m->sequence_period = m->sequence_quantum_ns;
+    m->fifo_due = m->now + FIFO_SERVICE_NS;
+    m->water_sample_burst = 0;
+    m->led_on = 0;
+    m->led_tick = 0;
+    clear_fifo(m);
+    ma3_synth_reset(&m->synth);
 }
-static unsigned translate_value(unsigned address,unsigned value)
+
+static void led_event(Ma3 *m, unsigned value)
 {
-    /* C100 GetFmBlockFnum/GetWtBlockFnum pack FNUM[9:7],BLOCK,FNUM[6:0].
-       MA-5 expects BLOCK,FNUM[9:7],FNUM[6:0] (Hw decoder 100036B8).
-       Swap only voice pitch high bytes; preserve independent-channel bit 6
-       and the packet terminator bit 7. Voice RAM is not parameter RAM. */
-    unsigned offset=address<0x90?address:address>=0xe0&&address<0x140?address-0xe0:UINT32_MAX;
-    if(offset!=UINT32_MAX&&offset%6==3)
-        return (value&0xc0)|((value&7)<<3)|((value>>3)&7);
-    return value;
-}
-static unsigned native_irq_low(unsigned value)
-{
-    return ((value&3)<<2)|((value&0x60)>>1)|(value&0x80);
-}
-static unsigned guest_irq(unsigned low,unsigned high)
-{
-    return ((low&0x0c)>>2)|(high&0x0c)|((low&0x30)<<1)|(low&0x80);
-}
-static unsigned led_marker(Ma3 *m,unsigned value)
-{
-    m->led_serial=(m->led_serial+1)&63;
-    return (value&128)|(m->led_serial<<1)|(value&1);
-}
-static void led_update(Ma3 *m)
-{
-    unsigned token=ma5_hw_led_token(m->hw);static const unsigned colors[]={2,4,1,3};
-    if(token==m->led_token)return;
-    m->led_token=token;m->led_on=token&1;m->led_tick=m->bus->ticks;++m->led_events;
-    if(m->led_on){unsigned x=m->led_rng?m->led_rng:0x6d2b79f5u;
-        unsigned choices[4],count=0,i;
-        /* Keep the last lit color across off events. Choose directly from
-           the remaining palette so consecutive on events cannot repeat. */
-        for(i=0;i<4;++i)if(colors[i]!=m->led_color)choices[count++]=colors[i];
-        x^=x<<13;x^=x>>17;x^=x<<5;m->led_rng=x;m->led_color=choices[x%count];}
-}
-static void immediate_parameter(Ma3 *m,unsigned address,unsigned value)
-{
-    unsigned mapped=translate_address(address);
-    if(!m->hw)return;
-    if(mapped!=UINT32_MAX){ma5_hw_parameter(m->hw,mapped,address==0x146?led_marker(m,value):translate_value(address,water_voice(m,address,value)));++m->translated;}
-    else if(address==0x161){
-        ma5_hw_register(m->hw,0x26,value&3,m->bank);
-        /* SeekControl starts, polls the FIFO sixteen times, then stops/clears.
-           Waiting for the next PCM block loses its zero-delay setup commands.
-           Execute due commands now without generating samples or time. */
-        if(value&1)ma5_hw_pump(m->hw);
-        ++m->translated;
-    }
-    else if(address==0x15e){++m->translated; /* High 7-bit divider field, latch on low write. */}
-    else if(address==0x15f){
-        /* C100 SetSpeed packs (divider >> 7), (divider & 127), not MA-5's
-           eight-bit register layout. Its conversion constant is 1157 ns;
-           the pinned MA-5 counter uses 1085 ns per divider unit. */
-        unsigned divider=((unsigned)m->parameter_ram[0x15e]<<7)|(value&127);
-        unsigned native=(divider*m->sequence_quantum_ns+542u)/1085u;
-        if(native>16383){strcpy(m->error,"MA-3 sequence divider exceeds MA-5 range");return;}
-        m->sequence_divider=native;m->sequence_valid=1;sequence_clock(m);++m->translated;
-    }
-    else if(address==0x160){ma5_hw_register(m->hw,0x25,value&127,m->bank);++m->translated;}
-    /* MA-3 secondary timer: C100 programs prescale 27 / reload 20, and
-       Timer0 drives stream refill plus the secondary software sequencer.
-       Native independent Timer A uses 37109 ns * prescale * reload. */
-    else if(address==0x152){ma5_hw_register(m->hw,0x2e,value&127,m->bank);++m->translated;}
-    else if(address==0x154){ma5_hw_register(m->hw,0x2f,value&127,m->bank);++m->translated;}
-    else if(address==0x155){ma5_hw_register(m->hw,0x30,value&3,m->bank);++m->translated;}
-    /* MA-3 FIFO IRQ is controlled by global IEN; seven parameter bits control
-       its other sources. MA-5 exposes FIFO enable in bit 7 of this register. */
-    else if(address==0x162){
-        ma5_hw_register(m->hw,0x11,native_irq_low(value)|128,m->bank);
-        ma5_hw_register(m->hw,0x12,value&0x0c,m->bank);++m->translated;
-    }
-    else ++m->unsupported;
-}
-static void delayed_packet(Ma3 *m,unsigned value)
-{
-    unsigned i,mapped;value&=255;
-    if(m->delayed_length==sizeof(m->delayed)){strcpy(m->error,"MA-3 delayed packet exceeds bound");++m->unsupported;return;}
-    m->delayed[m->delayed_length++]=(uint8_t)value;
-    if(m->delayed_phase==0) {
-        if(value&128){m->delay_end=m->delayed_length;m->delayed_phase=1;m->address_count=0;}
-    } else if(m->delayed_phase==1) {
-        if(m->address_count>=3){strcpy(m->error,"Invalid MA-3 delayed address");return;}
-        m->delayed_address|=(value&127)<<(7*m->address_count++);
-        if(value&128){m->address_end=m->delayed_length;m->delayed_phase=m->address_count==3?2:3;}
-    } else if(m->delayed_phase==2) {
-        if(m->delayed_count_bytes>=2){strcpy(m->error,"Invalid MA-3 delayed length");return;}
-        m->delayed_count|=(value&127)<<(7*m->delayed_count_bytes++);
-        if(value&128)m->delayed_phase=m->delayed_count?4:5;
-    } else if(m->delayed_phase==3) {if(value&128)m->delayed_phase=5;}
-    else if(m->delayed_phase==4) {if(m->delayed_count)--m->delayed_count;if(!m->delayed_count)m->delayed_phase=5;}
-    if(m->delayed_phase!=5)return;
-    mapped=m->address_count==3?m->delayed_address:translate_address(m->delayed_address);
-    if(mapped==UINT32_MAX){++m->unsupported;mapped=0x1df;}
-    if(m->hw) {
-        uint8_t packet[sizeof(m->delayed)+3];unsigned length=0;
-        for(i=0;i<m->delay_end;++i)packet[length++]=m->delayed[i];
-        if(m->address_count==3){for(i=m->delay_end;i<m->address_end;++i)packet[length++]=m->delayed[i];}
+    static const unsigned colors[] = {2, 4, 1, 3};
+    m->led_on = value & 1u;
+    m->led_tick = m->bus->ticks;
+    ++m->led_events;
+    if (m->led_on) {
+        unsigned choices[3], count = 0, i;
+        if (!m->led_color) m->led_color = colors[ma_water_random(&m->led_rng) % 4];
         else {
-            if(mapped>=128){packet[length++]=(uint8_t)(mapped&127);packet[length++]=(uint8_t)((mapped>>7)|128);}
-            else packet[length++]=(uint8_t)(mapped|128);
-        }
-        /* Preserve the delay of an unsupported command with a hardware NOP. */
-        if(mapped==0x1df)packet[length++]=128;
-        else for(i=m->address_end;i<m->delayed_length;++i)
-            packet[length++]=(uint8_t)(m->address_count==3?
-                (i<m->address_end+m->delayed_count_bytes?m->delayed[i]:water_sample(m,m->delayed[i])):
-                (m->delayed_address+i-m->address_end==0x146?led_marker(m,m->delayed[i]):
-                 translate_value(m->delayed_address+i-m->address_end,
-                    water_voice(m,m->delayed_address+i-m->address_end,m->delayed[i]))));
-        ma5_hw_fifo(m->hw,1,packet,length);
-        ++m->translated;
-    }
-    m->delayed_phase=m->delayed_length=m->delayed_address=m->delayed_count=m->delayed_count_bytes=0;
-}
-static void parameter_packet(Ma3 *m,unsigned value)
-{
-    unsigned mode=m->selector&63;value&=255;
-    if(mode!=2&&mode!=3)return;
-    if(mode==2&&m->packet_phase==3){m->packet_phase=m->address_bytes=m->length_bytes=0;m->packet_address=m->packet_length=0;}
-    if(m->packet_phase==0) {
-        if(m->address_bytes>=3){strcpy(m->error,"Invalid MA-3 immediate address");m->packet_phase=3;return;}
-        m->packet_address|=(value&127)<<(7*m->address_bytes++);
-        if(value&128) {
-            m->packet_phase=mode==3?2:m->address_bytes==3?1:2;
-            if(mode==2&&m->address_bytes==3&&m->hw) {
-                m->packet_start=m->packet_address;
-                ma5_hw_write(m->hw,0,2);ma5_hw_write(m->hw,1,m->packet_address&127);
-                ma5_hw_write(m->hw,1,(m->packet_address>>7)&127);ma5_hw_write(m->hw,1,(m->packet_address>>14)|128);
-            }
-        }
-    } else if(m->packet_phase==1) {
-        if(m->length_bytes>=2){strcpy(m->error,"Invalid MA-3 immediate length");m->packet_phase=3;return;}
-        m->packet_length|=(value&127)<<(7*m->length_bytes++);
-        if(m->hw)ma5_hw_write(m->hw,1,value);
-        if(value&128){m->packet_total=m->packet_length;m->packet_phase=m->packet_length?2:3;}
-    } else if(m->packet_phase==2) {
-        if(mode==3) {
-            /* MA-3 RBO is selected by the request's low seven bits. The
-               hardware DLL exposes only RBO1; MA-3 parameter reads use RBO3. */
-            unsigned mapped=translate_address(m->packet_address);
-            if(m->hw&&(value&127)==0&&(m->address_bytes==3||mapped!=UINT32_MAX)) {
-                m->response=ma5_hw_memory(m->hw,m->address_bytes==3?m->packet_address:mapped,m->address_bytes==3);
-                if(m->address_bytes!=3)m->response=translate_value(m->packet_address,m->response);
-                m->response_mask=0x10;m->response_selector=1;++m->ram_reads;
-            } else if(m->hw&&(value&127)==0&&m->packet_address>=0x14a&&m->packet_address<=0x151) {
-                unsigned cursor=ma5_hw_pcm_cursor(m->hw,m->packet_address-0x14a);
-                unsigned format=cursor>>24,offset=cursor&0xffff;
-                if(cursor==UINT32_MAX){strcpy(m->error,"Native PCM cursor layout is unavailable");return;}
-                offset=format==0?offset/2:format==1?offset*2:offset;
-                offset=(offset+0x20)&0x3ff;
-                m->response=0x40|(format<2?(offset>>4)&0x3e:(offset>>5)&0x1f);
-                m->response_mask=0x10;m->response_selector=1;++m->ram_reads;
-            } else if(m->packet_address<sizeof(m->parameter_ram)&&(value&127)<=2) {
-                m->response=m->parameter_ram[m->packet_address];m->response_mask=1u<<((value&127)+4);
-                m->response_selector=(value&127)+1;++m->ram_reads;
-            }
-            m->packet_phase=3;
-        } else {
-            if(m->packet_address<sizeof(m->parameter_ram))m->parameter_ram[m->packet_address]=(uint8_t)(m->address_bytes==3?value:value&127);
-            if(m->address_bytes==3){if(m->hw)ma5_hw_write(m->hw,1,water_sample(m,value));}
-            else immediate_parameter(m,m->packet_address,value);
-            ++m->packet_address;
-            if(m->address_bytes==3){
-                if(m->packet_length)--m->packet_length;
-                if(!m->packet_length){
-                    m->packet_phase=3;
-                    if(m->hw)ma5_hw_ram_changed(m->hw,m->packet_start,m->packet_total);
-                }
-            }
-            else if(value&128)m->packet_phase=3;
+            for (i = 0; i < 4; ++i) if (colors[i] != m->led_color) choices[count++] = colors[i];
+            m->led_color = choices[ma_water_random(&m->led_rng) % count];
         }
     }
 }
-static uint32_t read_ma3(void *ctx,uint32_t off,unsigned width)
+
+static void configure_timer(Ma3 *m, unsigned index, int restart)
 {
-    Ma3 *m=ctx;unsigned result=0;
-    if(width!=1||(off!=0&&off!=4)){bus_fault_access(m->bus,0,m->base+off,width,0,"MA-3 requires byte port access");return 0;}
-    ++m->reads;if(m->hw)result=ma5_hw_read(m->hw,off==4);
-    if(m->hw&&off==4&&(m->selector&63)==0&&m->bank==0) {
-        unsigned high;
-        ma5_hw_write(m->hw,0,0x10);high=ma5_hw_read(m->hw,1);
-        ma5_hw_write(m->hw,0,m->selector);result=guest_irq(result,high);
+    Ma3Timer *timer = &m->timers[index];
+    unsigned reload = m->parameter_ram[index ? 0x157 : 0x154];
+    unsigned control = m->parameter_ram[index ? 0x158 : 0x155];
+    uint64_t tick_ns = UINT64_C(37109) * m->parameter_ram[0x152];
+    uint64_t period;
+    if (index && (control & 4u)) tick_ns = m->sequence_period;
+    period = (control & 1u) ? tick_ns * reload : 0;
+    if (restart || timer->period != period) {
+        timer->period = period;
+        timer->due = period ? m->now + period : NO_EVENT;
     }
-    if(m->hw&&off==0)result|=m->response_mask;
-    /* Bits 4..6 acknowledge the selected read buffer, not its number.
-       ReceiveData selects RBO1/2/3 with 0x11/0x22/0x43. */
-    if(m->hw&&off==4&&(m->selector&15)==m->response_selector&&m->response_mask){result=m->response;m->response_mask=0;}
-    if(m->trace)fprintf(m->trace,"%llu %08x R %u %02x sel=%02x\n",(unsigned long long)m->bus->ticks,m->bus->pc,off,result,m->selector);
+}
+
+static void sequence_set_period(Ma3 *m)
+{
+    unsigned divider = ((unsigned)m->parameter_ram[0x15e] << 7) | m->parameter_ram[0x15f];
+    uint64_t old = m->sequence_period;
+    uint64_t period = (uint64_t)(divider ? divider : 1) * m->sequence_quantum_ns;
+    uint64_t remaining = m->sequence_wait;
+    if (m->sequence_due != NO_EVENT) remaining = m->sequence_due > m->now ? m->sequence_due - m->now : 0;
+    if (m->water && divider) period = (period * m->water_scale + 50) / 100;
+    /* Preserve sequence ticks (including a partial tick) on speed changes. */
+    remaining = (remaining / old) * period + ((remaining % old) * period + old - 1) / old;
+    if (m->sequence_due != NO_EVENT) m->sequence_due = m->now + remaining;
+    else m->sequence_wait = remaining;
+    m->sequence_period = period;
+    configure_timer(m, 1, 0);
+}
+
+static void sequence_reset(Ma3 *m)
+{
+    /* A delay already taken from the FIFO still belongs to its packet. A
+       reset rebases it at the current time. Clearing the FIFO discards it. */
+    if (m->delayed.phase == PACKET_ADDRESS && !m->delayed.parts) {
+        uint64_t delay = m->delayed.delay * m->sequence_period;
+        if (m->parameter_ram[0x161] & 1u) m->sequence_due = m->now + delay;
+        else m->sequence_wait = delay;
+    }
+}
+
+static void write_parameter(Ma3 *m, unsigned address, unsigned value)
+{
+    unsigned previous = 0;
+    value &= 127u;
+    if (address < sizeof(m->parameter_ram)) {
+        previous = m->parameter_ram[address];
+        m->parameter_ram[address] = (uint8_t)value;
+    }
+    if (address < MA3_VOICE_END) {
+        unsigned offset = address >= 0xe0 ? address - 0xe0 : address;
+        /* The fictional water effect changes expression/pitch data, leaving
+           addresses, channel selection, key gates and readback intact. */
+        if (m->water && (address < 0x90 || address >= 0xe0) && offset % 6 >= 2 && offset % 6 <= 4) {
+            uint32_t random = ma_water_random(&m->water_rng);
+            if ((random & 7u) == 0) {
+                value ^= 1u << ((random >> 8) % 6);
+                ++m->water_faults;
+            }
+        }
+        if (address >= 0xb0 && address < 0xe0) ++m->unsupported; /* Channel LFO/bend. */
+        else ma3_synth_write(&m->synth, m->parameter_ram, address, value);
+        ++m->commands;
+        return;
+    }
+    switch (address) {
+    case 0x146:
+        led_event(m, value);
+        break;
+    case 0x152:
+        configure_timer(m, 0, 0);
+        configure_timer(m, 1, 0);
+        break;
+    case 0x154: case 0x155:
+        configure_timer(m, 0, address == 0x155 && (value & 2u));
+        break;
+    case 0x157: case 0x158:
+        configure_timer(m, 1, address == 0x158 && (value & 2u));
+        break;
+    case 0x15a: case 0x15b: case 0x15c: case 0x15d:
+        m->irq_flags |= 1u << (address - 0x15a);
+        break;
+    case 0x15f: /* The low field latches the divider. */
+        sequence_set_period(m);
+        break;
+    case 0x160:
+        if (m->fifo_count > (value & 7u) * 64u) m->irq_flags &= ~FIFO_IRQ;
+        break;
+    case 0x161:
+        if ((previous ^ value) & 1u) {
+            if (value & 1u) {
+                if (m->delayed.phase != PACKET_DELAY) m->sequence_due = m->now + m->sequence_wait;
+            } else {
+                m->sequence_wait = m->sequence_due != NO_EVENT && m->sequence_due > m->now ? m->sequence_due - m->now : 0;
+                m->sequence_due = NO_EVENT;
+            }
+        }
+        if (value & 2u) sequence_reset(m);
+        break;
+    case 0x148: case 0x166: /* NOPs issued by the driver. */
+    case 0x15e: case 0x162:
+        break;
+    default:
+        ++m->unsupported;
+        return;
+    }
+    ++m->commands;
+}
+
+static void write_ram(Ma3 *m, unsigned address, unsigned value)
+{
+    if (m->water && address >= MA3_RAM_BASE && address < MA3_RAM_END) {
+        unsigned damaged = ma_water_sample_byte(&m->water_rng, &m->water_sample_burst, value);
+        if (damaged != value) ++m->water_faults;
+        value = damaged;
+    }
+    ma3_synth_ram(&m->synth, address, (uint8_t)value);
+}
+
+static void read_parameter(Ma3 *m, const Ma3Packet *p, unsigned buffer)
+{
+    unsigned address = p->address;
+    unsigned value = 0;
+    if (buffer >= 3) return;
+    if (p->full_ram) {
+        if (address >= MA3_RAM_BASE && address < MA3_RAM_END) value = m->synth.ram[address - MA3_RAM_BASE];
+    } else if (!buffer && address >= 0x14a && address <= 0x151) {
+        value = ma3_synth_cursor(&m->synth, address - 0x14a);
+    } else if (address < sizeof(m->parameter_ram)) value = m->parameter_ram[address];
+    m->responses[buffer] = (uint8_t)value;
+    m->response_ready |= 0x10u << buffer;
+    ++m->ram_reads;
+}
+
+/* Address, length and delay use least-significant 7-bit fields first,
+   terminated by bit 7. A RAM payload's bytes are always literal. */
+static int field_byte(Ma3 *m, Ma3Packet *p, uint32_t *field, unsigned limit, unsigned value)
+{
+    *field |= (value & 127u) << (7 * p->parts++);
+    if (value & 128u) return 1;
+    if (p->parts < limit) return 0;
+    strcpy(m->error, "Invalid MA-3 packet field");
+    return 1;
+}
+
+static int packet_byte(Ma3 *m, Ma3Packet *p, unsigned mode, unsigned value)
+{
+    switch (p->phase) {
+    case PACKET_DELAY:
+        if (field_byte(m, p, &p->delay, 4, value)) {
+            p->parts = 0;
+            p->phase = PACKET_ADDRESS;
+            if (mode == SEQUENCED_WRITE) m->sequence_due = m->now + p->delay * m->sequence_period;
+        }
+        break;
+    case PACKET_ADDRESS:
+        if (field_byte(m, p, &p->address, 3, value)) {
+            p->full_ram = p->parts == 3;
+            p->parts = 0;
+            p->phase = mode == READ_REQUEST ? PACKET_READ : p->full_ram ? PACKET_LENGTH : PACKET_PARAMETERS;
+        }
+        break;
+    case PACKET_LENGTH:
+        if (field_byte(m, p, &p->length, 2, value)) {
+            p->phase = PACKET_RAM;
+            return p->length == 0;
+        }
+        break;
+    case PACKET_RAM:
+        if (mode != FRAME_ONLY) write_ram(m, p->address, value);
+        ++p->address;
+        return --p->length == 0;
+    case PACKET_PARAMETERS:
+        if (mode != FRAME_ONLY) write_parameter(m, p->address, value);
+        ++p->address;
+        return (value & 128u) != 0;
+    case PACKET_READ:
+        read_parameter(m, p, value & 127u);
+        return 1;
+    }
+    return 0;
+}
+
+static void run_fifo(Ma3 *m)
+{
+    while (m->fifo_count && (m->parameter_ram[0x161] & 1u) && !*m->error) {
+        unsigned value;
+        if (m->sequence_due != NO_EVENT && m->sequence_due > m->now) break;
+        m->sequence_due = NO_EVENT;
+        value = m->fifo[m->fifo_head];
+        m->fifo_head = (m->fifo_head + 1) % MA3_FIFO_BYTES;
+        --m->fifo_count;
+        if (packet_byte(m, &m->delayed, SEQUENCED_WRITE, value))
+            memset(&m->delayed, 0, sizeof(m->delayed));
+    }
+}
+
+static void write_fifo(Ma3 *m, unsigned value)
+{
+    if (m->fifo_count == MA3_FIFO_BYTES) {
+        strcpy(m->error, "MA-3 delayed FIFO overflow");
+        return;
+    }
+    m->fifo[(m->fifo_head + m->fifo_count) % MA3_FIFO_BYTES] = (uint8_t)value;
+    ++m->fifo_count;
+    if (m->fifo_count > (m->parameter_ram[0x160] & 7u) * 64u) m->irq_flags &= ~FIFO_IRQ;
+    /* Track incomplete writes for the clear pulse (also while stopped). */
+    if (packet_byte(m, &m->fifo_input, FRAME_ONLY, value))
+        memset(&m->fifo_input, 0, sizeof(m->fifo_input));
+}
+
+static uint64_t frames_at(uint64_t ticks, uint32_t hz)
+{
+    return (ticks / hz) * AUDIO_RATE + (ticks % hz) * AUDIO_RATE / hz;
+}
+
+static void render_to(Ma3 *m, uint64_t ns, uint64_t end_frame)
+{
+    uint64_t frames;
+    m->now = ns;
+    if (end_frame <= m->rendered_frames) return;
+    frames = end_frame - m->rendered_frames;
+    m->rendered_frames = end_frame;
+    /* A muted frontend still has a running chip. In particular, PCM voice
+       cursors and timer/soft IRQs must remain observable from the guest. */
+    while (frames) {
+        int16_t left[AUDIO_BLOCK], right[AUDIO_BLOCK];
+        unsigned count = frames > AUDIO_BLOCK ? AUDIO_BLOCK : (unsigned)frames;
+        unsigned i;
+        int output = m->output && !m->stats.failed;
+        if (!output && !m->synth.active_fm && !m->synth.active_pcm) {
+            m->stats.frames += frames;
+            break;
+        }
+        ma3_synth_render(&m->synth, left, right, count);
+        frames -= count;
+        if (output) {
+            int16_t detuned_left[AUDIO_BLOCK + 8], detuned_right[AUDIO_BLOCK + 8];
+            int16_t interleaved[(AUDIO_BLOCK + 8) * 2];
+            int16_t *l = left, *r = right;
+            if (m->detune.enabled) {
+                count = ma_detune_pcm(&m->detune, left, right, count, detuned_left, detuned_right, AUDIO_BLOCK + 8);
+                l = detuned_left;
+                r = detuned_right;
+            }
+            ma_water_pcm(&m->water_pcm, l, r, count);
+            if (m->mixer) m->mixer(m->mixer_context, l, r, count);
+            for (i = 0; i < count; ++i) {
+                interleaved[i * 2] = l[i];
+                interleaved[i * 2 + 1] = r[i];
+            }
+            if (!audio_output_write(m->output, interleaved, count)) {
+                strcpy(m->output_error, "Could not write MA-3 audio output");
+                m->stats.failed = 1;
+            }
+            for (i = 0; i < count; ++i) {
+                int a = l[i], b = r[i];
+                unsigned peak = (unsigned)(a < 0 ? -a : a), other = (unsigned)(b < 0 ? -b : b);
+                if (other > peak) peak = other;
+                if (peak > m->stats.peak) m->stats.peak = peak;
+                m->stats.nonzero += (unsigned)(a != 0) + (unsigned)(b != 0);
+            }
+        }
+        m->stats.frames += count;
+    }
+}
+
+void ma3_advance(Ma3 *m, uint64_t ticks)
+{
+    uint64_t ns, due;
+    if (!m->attached || *m->error) return;
+    ns = ticks;
+    if (m->ticks_hz != NS_PER_SECOND)
+        ns = (ticks / m->ticks_hz) * NS_PER_SECOND + (ticks % m->ticks_hz) * NS_PER_SECOND / m->ticks_hz;
+    if (ns < m->now) return;
+    while ((due = device_deadline(m)) <= ns && due != NO_EVENT) {
+        unsigned i;
+        render_to(m, due, frames_at(due, 1000000000));
+        for (i = 0; i < 2; ++i) {
+            Ma3Timer *timer = &m->timers[i];
+            if (timer->due == due) {
+                m->irq_flags |= (unsigned)TIMER_A_IRQ << i;
+                timer->due += timer->period;
+            }
+        }
+        if (fifo_deadline(m) == due) m->irq_flags |= FIFO_IRQ;
+        if (m->water && m->water_next == due) {
+            uint32_t random = ma_water_random(&m->water_rng);
+            m->water_scale = 25 + random % 301;
+            sequence_set_period(m);
+            ++m->water_faults;
+            m->water_next = due + UINT64_C(1000000) * (25 + (random >> 16) % 136);
+        }
+        run_fifo(m);
+        signal_irq(m);
+        if (*m->error) break;
+    }
+    /* Convert straight from the guest clock here; rounding to nanoseconds
+       first loses a frame at some exact sample boundaries on legacy clocks. */
+    render_to(m, ns, frames_at(ticks, m->ticks_hz));
+    update_deadline(m);
+}
+
+static int response_buffer(unsigned selector)
+{
+    switch (selector & 0x7fu) {
+    case 0x11: return 0;
+    case 0x22: return 1;
+    case 0x43: return 2;
+    default: return -1;
+    }
+}
+
+static void trace_port(Ma3 *m, char direction, unsigned off, unsigned value)
+{
+    if (m->trace) fprintf(m->trace, "%llu %08x %c %u %02x sel=%02x\n",
+        (unsigned long long)m->bus->ticks, m->bus->pc, direction, off, value, m->selector);
+}
+
+static uint32_t read_ma3(void *context, uint32_t off, unsigned width)
+{
+    Ma3 *m = context;
+    unsigned result, reg = m->selector & 63u;
+    int response = response_buffer(m->selector);
+    if (width != 1 || (off != 0 && off != 4)) {
+        bus_fault_access(m->bus, 0, m->base + off, width, 0, "MA-3 requires byte port access");
+        return 0;
+    }
+    ma3_advance(m, *m->clock);
+    ++m->reads;
+    if (!off) {
+        result = 1u | m->response_ready | (m->control & 0x80u);
+        if (m->fifo_count == 0) result |= 2u;
+        if (m->fifo_count == MA3_FIFO_BYTES) result |= 8u;
+    } else if (response >= 0) {
+        result = m->responses[response];
+        m->response_ready &= ~(0x10u << response);
+    } else if (reg == 0 && m->bank == 0) result = irq_status(m);
+    else if (reg == 4) result = m->control;
+    else result = m->registers[m->bank][reg];
+    trace_port(m, 'R', off, result);
     return result;
 }
-static void write_ma3(void *ctx,uint32_t off,unsigned width,uint32_t value)
+
+static void write_ma3(void *context, uint32_t off, unsigned width, uint32_t value)
 {
-    Ma3 *m=ctx;unsigned reset_sequence=0,clear_fifo=0;
-    if(width!=1||(off!=0&&off!=4)){bus_fault_access(m->bus,1,m->base+off,width,value,"MA-3 requires byte port access");return;}
-    ++m->writes;if(off==0) {
-        m->selector=value&255;
-        if((m->selector&63)==2||(m->selector&63)==3){m->packet_phase=m->address_bytes=m->length_bytes=0;m->packet_address=m->packet_length=0;}
+    Ma3 *m = context;
+    unsigned reg = m->selector & 63u;
+    if (width != 1 || (off != 0 && off != 4)) {
+        bus_fault_access(m->bus, 1, m->base + off, width, value, "MA-3 requires byte port access");
+        return;
     }
-    else if((m->selector&63)==1||(m->selector&63)==2)++m->fifo_bytes;
-    if(off==4) {
-        if((m->selector&63)==4){
-            reset_sequence=(value&~m->control)&8;
-            clear_fifo=(value&~m->control)&0x20;
-            if(value&128)reset_parameters(m);m->bank=value&3;m->control=value&255;
+    ma3_advance(m, *m->clock);
+    ++m->writes;
+    value &= 255u;
+    if (!off) {
+        m->selector = value;
+        if ((value & 63u) == 2 || (value & 63u) == 3) {
+            memset(&m->immediate, 0, sizeof(m->immediate));
+            m->immediate.phase = PACKET_ADDRESS;
         }
-        if(clear_fifo) {
-            /* The chip's FIFO, and any half-received packet in it, is gone. The
-               translation layer assembles packets before handing them to the
-               DLL, so it must forget its partial packet too; otherwise the first
-               bytes of the next tune are glued onto the interrupted one and the
-               opening instrument/tempo setup is misparsed or lost. */
-            ++m->fifo_clears;if(m->delayed_phase||m->delayed_length)++m->partial_drops;
-            m->delayed_phase=m->delayed_length=m->delayed_address=m->delayed_count=m->delayed_count_bytes=0;
-        }
-        if((m->selector&63)==1)delayed_packet(m,value);
-        parameter_packet(m,value);
-        if(m->hw&&(m->selector&63)==7&&m->bank==0) {
-            /* Experimental shared output/FM/PCM gain mapping. MA-5 resets
-               its synth gains to zero too. The MA-3 analog curve and separate
-               synth controls still need reverse engineering. Zero is mute. */
-            unsigned gain=(value&31)?(((value&31)*15/31)<<3)|2:0;
-            ma5_hw_register(m->hw,0x27,gain,m->bank);ma5_hw_register(m->hw,0x28,gain,m->bank);
-            ma5_hw_register(m->hw,0x29,gain,m->bank);ma5_hw_register(m->hw,0x2a,gain,m->bank);
-        }
-    }
-    if(m->trace)fprintf(m->trace,"%llu %08x W %u %02x sel=%02x\n",(unsigned long long)m->bus->ticks,m->bus->pc,off,value&255,m->selector);
-    if(m->hw) {
-        if(off==0)ma5_hw_write(m->hw,0,value);
-        else if((m->selector&63)==0&&m->bank==0) {
-            ma5_hw_register(m->hw,0x10,value&0x0c,m->bank);
-            ma5_hw_write(m->hw,0,m->selector);ma5_hw_write(m->hw,1,native_irq_low(value));
-        }
-        else if((m->selector&63)>3||(m->selector&63)==0) {
-            ma5_hw_write(m->hw,0,m->selector);ma5_hw_write(m->hw,1,value);
-            /* The raw reset above rebuilds the DLL engine and returns it to
-               16 voices. This must follow that write, not precede it. */
-            if((m->selector&63)==4&&(value&128))ma5_hw_register(m->hw,0x38,1,m->bank);
-            /* C100 ClearFifo uses 0x28; refill recovery uses clear 0x20,
-               then reset 0x08 before restarting. Native MA-5 bit 3 only
-               resets its parser, leaving the cumulative tick/deadline pair
-               from the interrupted tune. Rebase both through native reset,
-               preserving the guest run bit and independent refill timer.
-               Plain stop/start (pause/resume) must not reset sequence time. */
-            if(reset_sequence)ma5_hw_register(m->hw,0x26,(m->parameter_ram[0x161]&1)|2,m->bank);
+    } else if (response_buffer(m->selector) < 0) {
+        if (reg == 1 && !*m->error) {
+            ++m->fifo_bytes;
+            write_fifo(m, value);
+        } else if ((reg == 2 || reg == 3) && !*m->error) {
+            if (reg == 2) ++m->fifo_bytes;
+            if (packet_byte(m, &m->immediate, reg == 2 ? IMMEDIATE_WRITE : READ_REQUEST, value)) {
+                memset(&m->immediate, 0, sizeof(m->immediate));
+                m->immediate.phase = PACKET_ADDRESS;
+            }
+        } else if (reg == 4) {
+            unsigned rising = value & ~m->control;
+            if (rising & 0x80u) reset_chip(m);
+            if (rising & 0x20u) {
+                ++m->fifo_clears;
+                if (m->fifo_input.phase != PACKET_DELAY || m->fifo_input.parts) ++m->partial_drops;
+                clear_fifo(m);
+            }
+            if (rising & 8u) sequence_reset(m);
+            m->control = value;
+            m->bank = value & 3u;
+        } else if (reg == 0 && m->bank == 0) {
+            m->irq_flags &= ~value;
+            if (value & FIFO_IRQ) m->fifo_due = m->now + FIFO_SERVICE_NS;
+        } else {
+            m->registers[m->bank][reg] = (uint8_t)value;
+            if (reg == 7 && m->bank == 0) m->synth.volume = value & 31u;
         }
     }
+    /* Starting, or appending to an already running FIFO, applies due
+       commands even if no PCM sample time has elapsed. */
+    run_fifo(m);
+    signal_irq(m);
+    update_deadline(m);
+    trace_port(m, 'W', off, value);
 }
-int ma3_attach(Ma3 *m,Bus *bus,Intc *intc,uint32_t base,uint32_t irq_mask,uint32_t sequence_quantum_ns)
+
+int ma3_attach(Ma3 *m, Bus *bus, Intc *intc, uint32_t base, uint32_t irq_mask, uint32_t sequence_quantum_ns)
 {
-    if(m->attached||!intc->attached||(base&3)||!irq_mask||!sequence_quantum_ns||sequence_quantum_ns>10000)return 0;
-    memset(m,0,sizeof(*m));m->bus=bus;m->intc=intc;m->base=base;m->irq_mask=irq_mask;
-    m->sequence_quantum_ns=sequence_quantum_ns;
-    if(!bus_device(bus,base,8,read_ma3,write_ma3,m))return 0;reset_parameters(m);m->attached=1;return 1;
+    if (m->attached || !intc->attached || (base & 3u) || !irq_mask || !sequence_quantum_ns || sequence_quantum_ns > 10000)
+        return 0;
+    memset(m, 0, sizeof(*m));
+    m->bus = bus;
+    m->intc = intc;
+    m->base = base;
+    m->irq_mask = irq_mask;
+    m->sequence_quantum_ns = sequence_quantum_ns;
+    if (!bus_device(bus, base, 8, read_ma3, write_ma3, m)) return 0;
+    m->attached = 1;
+    ma3_synth_init(&m->synth);
+    reset_chip(m);
+    ma3_set_clock(m, &bus->ticks, 1000000000);
+    return 1;
 }
-int ma3_enable(Ma3 *m,const char *dll,const char *wav,int speakers,uint32_t ticks_hz)
+
+void ma3_set_clock(Ma3 *m, const uint64_t *ticks, uint32_t ticks_hz)
 {
-    if(!m->attached||m->hw||ticks_hz<48000||ticks_hz>1000000000)return 0;
-    m->hw=ma5_hw_open(dll,wav,speakers,m->error,sizeof(m->error));if(!m->hw)return 0;
-    /* The DLL's FM engine starts at sixteen voices (its constructor gets
-       param 1 -> this+0x1804 = 0x10, FUN_10015670), and key-ons for
-       voice >= that count are silently dropped (FUN_10016094). The MA-3
-       reaches its second FM bank through native voices 16..31
-       (0x110..0x16F), so those notes would vanish entirely at the
-       default count. Register 0x38 bit0=1 selects the 32-voice bank
-       (case 0x38 -> FUN_10016198(engine,~v&1): 0 -> 32 voices). */
-    ma5_hw_register(m->hw,0x38,1,0);
-    m->ticks_hz=ticks_hz;m->last_tick=m->bus->ticks;m->fractional=m->pending_frames=0;
-    ma5_hw_set_water(m->hw,m->water);return 1;
+    if (!m->attached || !ticks || ticks_hz < AUDIO_RATE || ticks_hz > NS_PER_SECOND) return;
+    m->clock = ticks;
+    m->ticks_hz = ticks_hz;
+    update_deadline(m);
 }
-void ma3_set_water(Ma3 *m,int enabled)
+
+int ma3_open_audio(Ma3 *m, int speakers, const char *wav)
 {
-    if(m->water==!!enabled)return;
-    m->water=!!enabled;m->water_scale=100;m->water_next=0;
-    m->water_sample_burst=0;
-    ma5_hw_set_water(m->hw,m->water);sequence_clock(m);
-}
-int ma3_set_block(Ma3 *m,unsigned frames)
-{
-    if(frames<16||frames>480||480%frames)return 0;
-    m->block_frames=frames;return 1;
-}
-void ma3_advance(Ma3 *m,uint64_t ticks)
-{
-    uint64_t scaled;
-    unsigned block=m->block_frames?m->block_frames:480;
-    if(!m->hw)return;
-    if(m->water&&ticks>=m->water_next){uint32_t r=ma_water_random(&m->water_rng);
-        m->water_scale=25+r%301;sequence_clock(m);++m->water_faults;
-        m->water_next=ticks+(uint64_t)m->ticks_hz*(25+(r>>16)%136)/1000;}
-    if(ticks>=m->next_sample) {
-      scaled=m->fractional+(ticks-m->last_tick)*48000;m->last_tick=ticks;
-      if(scaled<m->ticks_hz)m->fractional=scaled;
-      else {
-        m->pending_frames+=scaled/m->ticks_hz;m->fractional=scaled%m->ticks_hz;
-        /* The backend stages short blocks into 10 ms sound-card buffers. */
-        while(m->pending_frames>=block){unsigned count=block;
-            if(!ma5_hw_generate(m->hw,count)){strcpy(m->error,"Hardware PCM generation/output failed");return;}m->pending_frames-=count;}
-      }
-      m->next_sample=ticks+(m->ticks_hz-m->fractional+47999)/48000;
+    if (!m->attached || m->output) {
+        strcpy(m->output_error, m->attached ? "MA-3 audio is already open" : "This model has no MA-3 chip");
+        return 0;
     }
-    led_update(m);
-    if(ma5_hw_irq(m->hw)){m->intc->pending|=m->irq_mask;++m->irq_events;}
+    ma3_advance(m, *m->clock);
+    m->output = audio_output_open(2, speakers, wav);
+    if (!m->output) {
+        strcpy(m->output_error, wav ? "Cannot open MA-3 WAV output" : "Cannot open host audio for MA-3");
+        return 0;
+    }
+    memset(&m->stats, 0, sizeof(m->stats));
+    *m->output_error = 0;
+    update_deadline(m);
+    return 1;
 }
+
+int ma3_close_audio(Ma3 *m)
+{
+    int ok;
+    if (!m->output) return 1;
+    ma3_advance(m, *m->clock);
+    m->stats.underruns = audio_output_underruns(m->output);
+    ok = audio_output_close(m->output);
+    m->output = NULL;
+    m->stats.failed |= !ok;
+    if (!ok && !*m->output_error) strcpy(m->output_error, "Could not finish MA-3 audio output");
+    update_deadline(m);
+    return ok;
+}
+
+void ma3_set_mixer(Ma3 *m, Ma3Mixer mixer, void *context)
+{
+    m->mixer = mixer;
+    m->mixer_context = context;
+}
+
+void ma3_set_detune(Ma3 *m, int enabled)
+{
+    if (m->attached) ma3_advance(m, *m->clock);
+    ma_detune_set(&m->detune, enabled);
+}
+
+void ma3_set_water(Ma3 *m, int enabled)
+{
+    if (m->water == !!enabled) return;
+    if (m->attached) ma3_advance(m, *m->clock);
+    m->water = !!enabled;
+    m->water_scale = 100;
+    m->water_next = m->now;
+    m->water_sample_burst = 0;
+    ma_water_set(&m->water_pcm, enabled);
+    if (m->attached) {
+        sequence_set_period(m);
+        update_deadline(m);
+    }
+}
+
+Ma3Stats ma3_stats(const Ma3 *m)
+{
+    Ma3Stats stats = m->stats;
+    if (m->output) stats.underruns = audio_output_underruns(m->output);
+    return stats;
+}
+
 void ma3_destroy(Ma3 *m)
 {
-    if(m->hw)ma5_hw_close(m->hw);if(m->trace)fclose(m->trace);memset(m,0,sizeof(*m));
+    ma3_close_audio(m);
+    if (m->trace) fclose(m->trace);
+    memset(m, 0, sizeof(*m));
 }

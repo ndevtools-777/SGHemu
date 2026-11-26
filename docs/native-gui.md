@@ -118,24 +118,18 @@ expected because radio/network emulation is absent. The strict startup profile r
 folder import chooses the experimental bring-up profile. No decorative frame,
 labels, captions or status bar were added to the main client area.
 
-Silent execution batches are limited to 120,000 instructions or approximately 8 ms
-per 16 ms GUI timer callback. Hardware-audio execution allows up to 1,000,000
-instructions for clock-enabled profiles, or one tenth of the legacy tick rate,
-with a 32 ms wall-time budget; buffered WinMM output supplies backpressure. The audio worker requests
-1 ms multimedia timer resolution only while speaker output is active, and releases
-it on teardown. C100 frame IRQs and Yamaha synthesis use estimated core cycles
-converted to emulated time, not Windows wall time. SIM/DMA retain legacy tick
-timing, and external memory wait states remain uncalibrated. Firmware reports an
-awake ARM clock of 23.4 MHz; see [clock evidence](c100-clock.md). Experimental hardware audio is
-opt-in: **Emulation > Import Yamaha hardware DLL...** imports the pinned
-`M5_EmuHw.dll`, resets the phone paused, and saves the path/enable setting in
-`state/audio.ini`. Press F5 afterward. The audio toggle also resets paused.
-All DLL calls run on a dedicated worker. F6 pauses both guest chip time and
-WaveOut output. Diagnostics include FIFO/IRQ and PCM counters. Ten-millisecond
-PCM blocks use eight output buffers; speaker pacing may extend an execution batch.
-The optional INI `ticks_hz` applies only to profiles without a clock model;
-it is interpreter ticks/sec, not physical CPU MHz.
-See [audio evidence and limitations](ma5-audio.md).
+The emulation thread runs short batches; buffered WaveOut output paces live
+audio. The sink requests 1 ms multimedia timer resolution while open. C100
+frame IRQs and native MA-3 synthesis use core cycles converted to emulated
+time. SIM/DMA retain legacy tick timing, and external memory wait states remain
+uncalibrated. See [clock evidence](c100-clock.md).
+
+**Emulation > MA-3 audio (reset)** toggles speaker output and saves the setting
+in `state/audio.ini`. MA-3 output defaults to on. The toggle leaves the phone
+stopped; press F5 afterward. F6 pauses emulation and WaveOut. Diagnostics
+include FIFO/IRQ and PCM counters. The optional INI `ticks_hz` supplies
+interpreter ticks/sec for profiles without a PLL clock.
+See [audio options](../README.md#ma-audio).
 
 LCD presentation prefers a target after LCD commands/writes have been quiet
 for 3 ms of guest time. Normal brief clears and partial redraws therefore

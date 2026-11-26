@@ -1,238 +1,298 @@
 #include "ma3.h"
 #include <stdlib.h>
 #include <string.h>
-/* Protocol tests use a recording hardware transport, not proprietary DLLs. */
-struct Ma5Hw { unsigned unused; };
-static struct Ma5Hw mock;
-static unsigned checks, count, ports[4096], values[4096], frames, irq, pumps;
-static unsigned parameter_address, parameter_value, registers[64];
-static unsigned memory_address,memory_full,memory_value;
-static unsigned native_selector,native_low,native_high;
-static unsigned sample_cursor,sample_voice;
-static unsigned changed_address,changed_length,led_token;
-static int water_enabled;
-#define CHECK(x) do { ++checks; if(!(x)){fprintf(stderr,"MA-3 line %d: %s\n",__LINE__,#x);exit(1);} } while(0)
-Ma5Hw *ma5_hw_open(const char *d,const char *w,int s,char *e,unsigned n)
-{ (void)d;(void)w;(void)s;(void)e;(void)n;return &mock; }
-void ma5_hw_close(Ma5Hw *h){(void)h;}
-void ma5_hw_ram_changed(Ma5Hw *h,unsigned address,unsigned length){(void)h;changed_address=address;changed_length=length;}
-unsigned ma5_hw_read(Ma5Hw *h,int data){(void)h;return data?
-    native_selector==0?native_low:native_selector==0x10?native_high:0:0;}
-void ma5_hw_write(Ma5Hw *h,int data,unsigned value)
-{(void)h;if(!data)native_selector=value&63;CHECK(count<4096);ports[count]=(unsigned)data;values[count++]=value;}
-void ma5_hw_fifo(Ma5Hw *h,unsigned selector,const uint8_t *bytes,unsigned length)
-{unsigned i;ma5_hw_write(h,0,selector);for(i=0;i<length;++i)ma5_hw_write(h,1,bytes[i]);}
-void ma5_hw_parameter(Ma5Hw *h,unsigned a,unsigned v){(void)h;parameter_address=a;parameter_value=v;}
-unsigned ma5_hw_memory(Ma5Hw *h,unsigned a,int full){(void)h;memory_address=a;memory_full=(unsigned)full;return memory_value;}
-unsigned ma5_hw_pcm_cursor(Ma5Hw *h,unsigned voice){(void)h;sample_voice=voice;return sample_cursor;}
-void ma5_hw_register(Ma5Hw *h,unsigned r,unsigned v,unsigned bank){(void)h;(void)bank;CHECK(r<64);registers[r]=v;native_selector=4;}
-int ma5_hw_generate(Ma5Hw *h,unsigned n){(void)h;frames+=n;return 1;}
-unsigned ma5_hw_led_token(Ma5Hw *h){(void)h;return led_token;}
-void ma5_hw_pump(Ma5Hw *h){(void)h;++pumps;}
-void ma5_hw_set_water(Ma5Hw *h,int enabled){(void)h;water_enabled=enabled;}
-int ma5_hw_irq(Ma5Hw *h){unsigned result=irq;(void)h;irq=0;return (int)result;}
+
+enum { SELECT = 0x200000, DATA = 0x200004, IRQ = 0x800000 };
+static const uint64_t sequence_tick = UINT64_C(865) * 1157;
 static Bus bus;
-static void ss(unsigned v){bus_write(&bus,0x200000,1,v);}
-static void data(unsigned v){bus_write(&bus,0x200004,1,v);}
-static unsigned read_parameter(unsigned a)
+static Intc intc;
+static Ma3 chip;
+static unsigned checks;
+
+#define CHECK(x) do { ++checks; if (!(x)) { fprintf(stderr, "MA-3 line %d: %s\n", __LINE__, #x); exit(1); } } while (0)
+
+static void select_port(unsigned value) { bus_write(&bus, SELECT, 1, value); }
+static void data(unsigned value) { bus_write(&bus, DATA, 1, value); }
+static unsigned read_data(void) { return bus_read(&bus, DATA, 1); }
+static unsigned status(void) { return bus_read(&bus, SELECT, 1); }
+
+static void field(unsigned value)
 {
-    ss(3);data(a&127);data((a>>7)|128);data(0x82);
-    CHECK(bus_read(&bus,0x200000,1)&0x40);
-    ss(0x43);return bus_read(&bus,0x200004,1);
+    while (value >= 128) {
+        data(value & 127);
+        value >>= 7;
+    }
+    data(value | 128);
 }
+
+static void parameter(unsigned address, unsigned value)
+{
+    select_port(2);
+    field(address);
+    data(value | 128);
+}
+
+static void delayed(unsigned ticks, unsigned address, unsigned value)
+{
+    select_port(1);
+    field(ticks);
+    field(address);
+    data(value | 128);
+}
+
+static unsigned read_parameter(unsigned address, unsigned buffer)
+{
+    static const unsigned selectors[] = {0x11, 0x22, 0x43};
+    unsigned value, ready = 0x10u << buffer;
+    select_port(3);
+    field(address);
+    data(0x80 + buffer);
+    CHECK(status() & ready);
+    select_port(selectors[buffer]);
+    value = read_data();
+    CHECK(!(status() & ready));
+    return value;
+}
+
+static void ram(unsigned address, const uint8_t *bytes, unsigned length)
+{
+    unsigned i;
+    select_port(2);
+    field(address);
+    data(length & 127);
+    data((length >> 7) | 128);
+    for (i = 0; i < length; ++i) data(bytes[i]);
+}
+
+static void control(unsigned bits)
+{
+    select_port(4);
+    data(bits);
+    data(0);
+}
+
+static void advance(uint64_t ns)
+{
+    bus.ticks += ns;
+    ma3_advance(&chip, bus.ticks);
+}
+
+static void divider(void)
+{
+    parameter(0x15e, 6);
+    parameter(0x15f, 97);
+}
+
+static void ports(void)
+{
+    const uint8_t literal[] = {0x80, 0xff};
+    CHECK(read_parameter(0x90, 2) == 0x60);
+    CHECK(read_parameter(0xa0, 1) == 0x3c);
+    CHECK(read_parameter(0x14a, 2) == 0x40);
+    ram(0x4020, literal, sizeof(literal));
+    CHECK(read_parameter(0x4020, 0) == 0x80);
+    CHECK(read_parameter(0x4021, 0) == 0xff);
+
+    /* Zero-delay commands can span selector writes and take effect at the
+       same emulated time as the run command. */
+    select_port(1);
+    data(0x80);
+    data(0x83);
+    select_port(0x81);
+    data(0xac);
+    CHECK(!(status() & 2) && read_parameter(3, 0) == 0);
+    parameter(0x161, 1);
+    CHECK(chip.stats.frames == 0 && (status() & 2));
+    CHECK(read_parameter(3, 0) == 0x2c);
+    delayed(0, 0x119, 0x24);
+    CHECK(read_parameter(0x119, 0) == 0x24 && chip.stats.frames == 0);
+    bus_write(&bus, DATA, 2, 1);
+    CHECK(bus.fault);
+    bus.fault = 0;
+
+    control(0x80);
+    CHECK(read_parameter(3, 0) == 0 && read_parameter(0x4021, 0) == 0);
+}
+
+static void sequence(void)
+{
+    uint64_t led_events = chip.led_events, drops = chip.partial_drops;
+    divider();
+    delayed(100, 0x146, 1);
+    delayed(10, 0x146, 0);
+    parameter(0x161, 1);
+    advance(30 * sequence_tick);
+    parameter(0x161, 0);
+    advance(200 * sequence_tick);
+    CHECK(chip.led_events == led_events);
+    parameter(0x161, 1);
+    advance(70 * sequence_tick - 1);
+    CHECK(!chip.led_on && chip.led_events == led_events);
+    advance(1);
+    CHECK(chip.led_on && chip.led_events == led_events + 1);
+    CHECK(chip.led_tick == bus.ticks && chip.led_color >= 1 && chip.led_color <= 4);
+    advance(10 * sequence_tick);
+    CHECK(!chip.led_on && chip.led_events == led_events + 2);
+
+    /* Clear drops a partial packet. An explicit reset rebases the delay of
+       the first fresh packet, even when the sequencer is already running. */
+    select_port(1); data(0x8a); data(0x5a);
+    control(0x28);
+    CHECK(chip.partial_drops == drops + 1 && (status() & 2));
+    delayed(100, 0x15a, 0x43);
+    delayed(1000, 0x15a, 0x44);
+    advance(30 * sequence_tick);
+    control(8);
+    advance(100 * sequence_tick - 1);
+    CHECK(read_parameter(0x15a, 0) == 0);
+    advance(1);
+    CHECK(read_parameter(0x15a, 0) == 0x43);
+    parameter(0x161, 0);
+    control(0x20);
+    advance(1000 * sequence_tick);
+    CHECK(read_parameter(0x15a, 0) == 0x43 && (status() & 2));
+}
+
+static void interrupts(void)
+{
+    unsigned i;
+    const uint64_t timer_a_period = UINT64_C(37109) * 27 * 20;
+    control(0x80);
+    divider();
+    parameter(0x162, 0);
+    parameter(0x15b, 0x44);
+    select_port(0x80);
+    CHECK(!(read_data() & 2) && !intc.pending);
+    parameter(0x162, 2);
+    select_port(0);
+    CHECK((read_data() & 2) && !intc.pending);
+    select_port(0x80);
+    CHECK(intc.pending == IRQ && read_data() == 2);
+    data(2);
+    intc.pending = 0; /* The CPU acknowledges its interrupt controller separately. */
+    CHECK(!read_data());
+
+    parameter(0x160, 1);
+    for (i = 0; i < 17; ++i) delayed(10, 0x166, 0);
+    advance(2000000);
+    select_port(0x80);
+    CHECK(!read_data() && !intc.pending); /* Still above the 64-byte threshold. */
+    parameter(0x161, 1);
+    select_port(0x81);
+    advance(10 * sequence_tick);
+    CHECK(intc.pending == IRQ);
+    select_port(0);
+    CHECK(read_data() == 0x80);
+    data(0x80);
+    intc.pending = 0;
+    CHECK(!read_data());
+
+    parameter(0x162, 0x60);
+    parameter(0x152, 27);
+    parameter(0x154, 20);
+    parameter(0x157, 5);
+    parameter(0x155, 1);
+    parameter(0x158, 5); /* Timer B uses the sequencer divider in this mode. */
+    advance(5 * sequence_tick);
+    select_port(0);
+    CHECK((read_data() & 0x60) == 0x40);
+    data(0x40);
+    parameter(0x158, 0);
+    advance(timer_a_period - 5 * sequence_tick - 1);
+    select_port(0);
+    CHECK(!(read_data() & 0x60));
+    advance(1);
+    CHECK((read_data() & 0x60) == 0x20);
+    data(0x20);
+    parameter(0x155, 0);
+    advance(timer_a_period);
+    select_port(0);
+    CHECK(!(read_data() & 0x60));
+}
+
+static void playback(void)
+{
+    /* ADPCM: 63 samples in 10 ms. RBO1 reports the byte containing sample 63;
+       RBO3 still returns the reset value. Muted runs must advance the cursor. */
+    const uint8_t descriptor[] = {0xfa, 0, 0, 0xf0, 0xf0, 0, 0, 0x40, 0x20, 0, 0, 1, 0};
+    const uint8_t fm[] = {0x78, 0x45, 0,0,0,0,0,0,0, 2,0xf0,0xf0,0,0,0x10,0,
+                          0,0,0,0,0,0,0, 0,0,0,0,0,0,0};
+    control(0x80);
+    ram(0x4000, descriptor, sizeof(descriptor));
+    parameter(0x60, 0x40); parameter(0x61, 0);
+    parameter(0x63, 2); parameter(0x64, 0x40); parameter(0x65, 0x40);
+    advance(10000000);
+    CHECK(chip.synth.pcm[0].phase >> 16 == 63);
+    CHECK(read_parameter(0x14a, 0) == 0x42 && read_parameter(0x14a, 2) == 0x40);
+
+    control(0x80);
+    CHECK(ma3_open_audio(&chip, 0, NULL));
+    select_port(7); data(31);
+    ram(0x4000, fm, sizeof(fm));
+    /* Algorithm 5 has two independent pairs; operator 2 is a carrier.
+       Exercise the second FM bank with just that carrier enabled. */
+    parameter(0xe0, 0x40); parameter(0xe1, 0); parameter(0xe2, 0x7c);
+    parameter(0xe3, 0x2c); parameter(0xe4, 0x4a); parameter(0xe5, 0x40);
+    advance(10000000);
+    CHECK(chip.stats.frames == 480 && chip.stats.nonzero > 500 && chip.stats.peak > 0);
+    parameter(0xe5, 0);
+    advance(10000000);
+    {
+        uint64_t nonzero = chip.stats.nonzero;
+        advance(10000000);
+        CHECK(chip.stats.nonzero == nonzero);
+    }
+    CHECK(ma3_close_audio(&chip));
+
+    /* Water may damage payload data, never the address or length. */
+    ma3_set_water(&chip, 1);
+    chip.water_sample_burst = 4;
+    ram(0x4020, descriptor, 4);
+    CHECK(read_parameter(0x4020, 0) != descriptor[0]);
+    CHECK(read_parameter(0x4024, 0) == 0);
+    advance(100000000);
+    CHECK(chip.water_faults >= 5);
+    ma3_set_water(&chip, 0);
+    CHECK(!chip.water && !chip.water_pcm.enabled);
+}
+
+static void limits(void)
+{
+    unsigned i;
+    control(0x80);
+    select_port(1);
+    for (i = 0; i < MA3_FIFO_BYTES / 4; ++i) {
+        data(0x80); field(0x166); data(0x80);
+    }
+    CHECK((status() & 8) && !*chip.error);
+    data(0x80);
+    CHECK(strstr(chip.error, "FIFO overflow") != NULL);
+}
+
 int main(void)
 {
-    Ma3 m={0};Intc intc={0};unsigned i;
-    intc.attached=1;
-    CHECK(!ma3_attach(&m,&bus,&intc,0x200000,0x800000,0));
-    CHECK(ma3_attach(&m,&bus,&intc,0x200000,0x800000,1157));
-    CHECK(!ma3_attach(&m,&bus,&intc,0x200000,1,1157));
-    CHECK(!ma3_enable(&m,"mock",NULL,0,47999));
-    CHECK(ma3_enable(&m,"mock",NULL,0,48000));
-    CHECK(registers[0x38]==1); /* DLL FM engine must be armed for 32 voices. */
-    CHECK(read_parameter(0x90)==0x60);CHECK(read_parameter(0xa0)==0x3c);
-    CHECK(read_parameter(0x14a)==0x40);
-    ss(2);data(0x10);data(0x81);data(0xe4);
-    CHECK(parameter_address==0xc0);CHECK(parameter_value==0xe4);
-    CHECK(read_parameter(0x90)==0x64);
-    ss(4);registers[0x38]=0;data(0x80);data(0);CHECK(read_parameter(0x90)==0x60);
-    CHECK(registers[0x38]==1); /* The raw reset rebuilds the engine, so 32-voice mode must be re-armed after it. */
-    /* Firmware 1B,00 is a 3456-unit divider, not native register 1B00/4. */
-    ss(2);data(0x5e);data(0x82);data(0x1b);data(0x80);
-    CHECK(registers[0x23]==0x39);CHECK(registers[0x24]==0x94);
-    /* Explicit sequence reset rebases time, unlike ordinary pause/resume. */
-    ss(2);data(0x61);data(0x82);data(0x81);CHECK(registers[0x26]==1);
-    CHECK(pumps==1&&frames==0); /* Startup commands run without advancing PCM time. */
-    ss(4);data(8);CHECK(registers[0x26]==3);
-    registers[0x26]=99;data(8);CHECK(registers[0x26]==99);
-    data(0);CHECK(registers[0x26]==99);data(8);CHECK(registers[0x26]==3);
-    data(0);ss(2);data(0x61);data(0x82);data(0x80);CHECK(registers[0x26]==0);
-    ss(4);data(0x28);CHECK(registers[0x26]==2);data(0);
-    ss(2);data(0x61);data(0x82);data(0x81);CHECK(registers[0x26]==1);
-    ss(4);data(0x20);CHECK(registers[0x26]==1);data(0);
-    ss(2);data(0x61);data(0x82);data(0x80);
-    /* A split FIFO packet must preserve its delta and note gate/channel byte. */
-    count=0;ss(1);data(0x85);data(0x80);data(8);data(0);data(0x34);
-    CHECK(count==1);ss(0x81);data(0x2c);data(0x4a);data(0xc0);
-    CHECK(m.delayed_length==0);CHECK(values[count-1]==0xc0);
-    CHECK(ports[2]==0 && values[2]==1);CHECK(values[3]==0x85);
-    CHECK(values[count-3]==0x25);CHECK(values[count-2]==0x4a);
-    /* A4: MA-3 BLOCK=4, FNUM=600 -> native high=0x24, low=0x58.
-       C5: BLOCK=4, FNUM=714 -> native high=0x25, low=0x4a. */
-    ss(2);data(0x83);data(0xa4);CHECK(parameter_address==3);CHECK(parameter_value==0xa4);
-    CHECK(read_parameter(3)==0x24); /* Guest sees its original encoding. */
-    memory_value=0x25;ss(3);data(0x83);data(0x80);ss(0x11);
-    CHECK(bus_read(&bus,0x200004,1)==0x2c);CHECK(memory_address==3&&!memory_full);
-    memory_value=0xab;ss(3);data(0);data(0);data(0x81);data(0x80);ss(0x11);
-    CHECK(bus_read(&bus,0x200004,1)==0xab);CHECK(memory_address==0x4000&&memory_full);
-    ss(2);data(0x83);data(0xec);CHECK(parameter_value==0xe5); /* Flags preserved. */
-    ss(2);data(0x69);data(0x81);data(0xac);CHECK(parameter_address==0x119);CHECK(parameter_value==0xa5);
-    /* GetWtBlockFnum packs PCM pitch in the same bit order. */
-    ss(2);data(0xe3);data(0xac);CHECK(parameter_address==0x63);CHECK(parameter_value==0xa5);
-    count=0;ss(1);data(0x80);data(0x63);data(0x81);data(0xec);
-    CHECK(values[count-1]==0xe5); /* Second FM bank, pitch-only packet. */
-    count=0;ss(1);data(0x80);data(0xe3);data(0xac);CHECK(values[count-1]==0xa5);
-    /* Literal full-RAM data at an address resembling a pitch register. */
-    count=0;ss(1);data(0x80);data(3);data(0);data(0x80);data(0x81);data(0xac);
-    CHECK(values[count-1]==0xac);
-    ss(2);data(0x20);data(0);data(0x81);data(0x83);data(1);data(2);
-    CHECK(changed_address==0&&changed_length==0); /* No notification before packet completes. */
-    data(3);CHECK(changed_address==0x4020&&changed_length==3);
-    /* Stream-start payloads retain their delta, channel and live readback. */
-    count=0;ss(1);data(0x89);data(0x5a);data(0x82);data(0xc3);
-    CHECK(values[2]==0x89);CHECK(values[3]==0x56&&values[4]==0x83);
-    CHECK(values[5]==0xc3);
-    count=0;ss(1);data(0x80);data(0x5b);data(0x82);data(0xe4);
-    CHECK(values[3]==0x57&&values[4]==0x83);CHECK(values[5]==0xe4);
-    count=0;ss(1);data(0x80);data(0x5c);data(0x82);data(0xff);
-    CHECK(values[3]==0x58&&values[4]==0x83);CHECK(values[5]==0xff);
-    memory_value=0x43;ss(3);data(0x5a);data(0x82);data(0x80);ss(0x11);
-    CHECK(bus_read(&bus,0x200004,1)==0x43);CHECK(memory_address==0x1d6&&!memory_full);
-    ss(2);data(0x62);data(0x82);data(0xff);
-    CHECK(registers[0x11]==0xbc);CHECK(registers[0x12]==0x0c);
-    native_low=0x8c;native_high=0;ss(0);
-    CHECK(bus_read(&bus,0x200004,1)==0x83); /* Streams 0/1, FIFO. */
-    native_low=0x30;native_high=0x0c;
-    CHECK(bus_read(&bus,0x200004,1)==0x6c); /* Timers, upper soft IRQs. */
-    data(0x6f);CHECK(registers[0x10]==0x0c);CHECK(values[count-1]==0x3c);
-    native_low=native_high=0;
-    ss(2);data(0x52);data(0x82);data(0x9b);CHECK(registers[0x2e]==27);
-    ss(2);data(0x54);data(0x82);data(0x94);CHECK(registers[0x2f]==20);
-    ss(2);data(0x55);data(0x82);data(0x81);CHECK(registers[0x30]==1);
-    ss(2);data(0x55);data(0x82);data(0x80);CHECK(registers[0x30]==0);
-    sample_cursor=256;ss(3);data(0x51);data(0x82);data(0x80);ss(0x11);
-    CHECK(bus_read(&bus,0x200004,1)==0x4a);CHECK(sample_voice==7);
-    sample_cursor=(1u<<24)|256;ss(3);data(0x50);data(0x82);data(0x80);ss(0x11);
-    CHECK(bus_read(&bus,0x200004,1)==0x62);CHECK(sample_voice==6);
-    sample_cursor=(2u<<24)|256;ss(3);data(0x4a);data(0x82);data(0x80);ss(0x11);
-    CHECK(bus_read(&bus,0x200004,1)==0x49);CHECK(sample_voice==0);
-    sample_cursor=1984;ss(3);data(0x51);data(0x82);data(0x80);ss(0x11);
-    CHECK(bus_read(&bus,0x200004,1)==0x40); /* Ring-buffer wrap, not linear end. */
-    /* Unsupported delayed controls must not discard their time delta. */
-    count=0;ss(1);data(0x87);data(0x47);data(0x82);data(0x80);
-    CHECK(m.unsupported==1);CHECK(values[2]==0x87);
-    CHECK(values[3]==0x5f && values[4]==0x83 && values[5]==0x80);
-    /* LED commands retain their delta and update only when the DLL sequencer
-       executes the private stored marker. No color is carried in the MMF. */
-    count=0;ss(1);data(0x87);data(0x46);data(0x82);data(0x81);
-    CHECK(m.unsupported==1&&m.led_on==0);
-    CHECK(values[2]==0x87&&values[3]==0x5e&&values[4]==0x83&&values[5]==0x83);
-    led_token=3;bus.ticks=17;ma3_advance(&m,478);
-    CHECK(m.led_on==1&&m.led_tick==17&&m.led_events==1);
-    CHECK(m.led_color==1||m.led_color==2||m.led_color==3||m.led_color==4);
-    led_token=4;bus.ticks=18;
-    ma3_advance(&m,479);CHECK(frames==0);ma3_advance(&m,480);CHECK(frames==480);
-    irq=1;ma3_advance(&m,960);CHECK(frames==960);CHECK(intc.pending==0x800000);
-    CHECK(m.irq_events==1);ma3_advance(&m,961);CHECK(m.irq_events==1);
-    ss(4);data(0);ss(7);data(31);CHECK(registers[0x27]==0x7a);CHECK(registers[0x29]==0x7a);
-    data(0);CHECK(registers[0x27]==0);CHECK(registers[0x29]==0);
-    bus_write(&bus,0x200004,2,1);CHECK(bus.fault);bus.fault=0;
-    ss(1);for(i=0;i<1025;++i)data(0);CHECK(*m.error);
-    *m.error=0;ss(2);data(0);data(0);data(0);data(0);
-    CHECK(strstr(m.error,"immediate address")!=NULL);
-    /* Clearing the FIFO discards a half-received packet instead of gluing the
-       next tune's first packet onto it. */
-    {unsigned good[16],good_count,i2;uint64_t drops;
-        /* The bound-overflow test above leaves the delayed parser full; start clean. */
-        *m.error=0;m.delayed_phase=m.delayed_length=m.delayed_address=m.delayed_count=m.delayed_count_bytes=0;drops=m.partial_drops;
-        count=0;ss(1);data(0x80);data(0x63);data(0x81);data(0xec);
-        good_count=count;CHECK(good_count>0&&good_count<=16);for(i2=0;i2<good_count;++i2)good[i2]=values[i2];
-        ss(1);data(0x80);data(0x63);  /* interrupted mid-address */
-        CHECK(m.delayed_phase!=0);
-        ss(4);data(0x28);data(0);     /* ClearFifo pulse */
-        CHECK(m.delayed_phase==0&&m.delayed_length==0);CHECK(m.partial_drops==drops+1);
-        count=0;ss(1);data(0x80);data(0x63);data(0x81);data(0xec);
-        CHECK(count==good_count);for(i2=0;i2<good_count;++i2)CHECK(values[i2]==good[i2]);
-        ss(4);data(0x20);data(0);CHECK(m.partial_drops==drops+1); /* idle clear: nothing dropped */}
-    /* Short generation blocks: same total time, finer chip/CPU interleaving. */
-    CHECK(!ma3_set_block(&m,100));CHECK(!ma3_set_block(&m,8));CHECK(!ma3_set_block(&m,0));CHECK(ma3_set_block(&m,96));
-    {uint64_t t;unsigned before=frames;m.pending_frames=0;m.fractional=0;t=m.last_tick;
-        ma3_advance(&m,t+95);CHECK(frames==before);
-        ma3_advance(&m,t+96);CHECK(frames==before+96);
-        ma3_advance(&m,t+480);CHECK(frames==before+480);}
-    /* Deadline arithmetic must match the old per-step accumulator at every
-       step, including non-integral sample periods and live block changes. */
-    {static const uint32_t rates[]={48000,23400000,1000000000};unsigned r;
-      for(r=0;r<3;++r){uint64_t t=0,last=0,fraction=0,pending=0;unsigned j,expected=frames;
-        m.ticks_hz=rates[r];m.last_tick=m.fractional=m.pending_frames=m.next_sample=0;
-        for(j=0;j<10000;++j){uint64_t scaled;unsigned block;
-          if(j%67==0)CHECK(ma3_set_block(&m,j%3==0?16:j%3==1?96:480));
-          t+=(j%97==0?rates[r]/1000:1+(j*17)%701);block=m.block_frames;
-          scaled=fraction+(t-last)*48000;last=t;
-          if(scaled<rates[r])fraction=scaled;
-          else {pending+=scaled/rates[r];fraction=scaled%rates[r];
-            while(pending>=block){expected+=block;pending-=block;}}
-          ma3_advance(&m,t);
-          CHECK(frames==expected);CHECK(m.pending_frames==pending);
-          CHECK(m.fractional+(t-m.last_tick)*48000==fraction);
-        }
-      }
+    intc.attached = 1;
+    CHECK(!ma3_attach(&chip, &bus, &intc, SELECT, IRQ, 0));
+    CHECK(ma3_attach(&chip, &bus, &intc, SELECT, IRQ, 1157));
+    CHECK(!ma3_attach(&chip, &bus, &intc, SELECT, IRQ, 1157));
+    ports();
+    sequence();
+    interrupts();
+    playback();
+    limits();
+    ma3_destroy(&chip);
+    bus_destroy(&bus);
+
+    /* A legacy clock cannot round each individual advance to a frame. */
+    bus.ticks = 0;
+    CHECK(ma3_attach(&chip, &bus, &intc, SELECT, IRQ, 1157));
+    ma3_set_clock(&chip, &bus.ticks, 23400000);
+    while (bus.ticks < 2340000) {
+        advance(137);
+        CHECK(chip.stats.frames == bus.ticks * AUDIO_RATE / 23400000);
     }
-    {unsigned original,changes=0,fast=0,slow=0;uint64_t t=m.last_tick;
-        count=0;ss(2);data(0x5e);data(0x82);data(1);data(0xc0);
-        original=(registers[0x23]<<6)|(registers[0x24]>>2);CHECK(original>0);
-        ma3_set_water(&m,1);CHECK(m.water&&water_enabled);
-        for(i=0;i<100;++i){unsigned divider;ss(i%2?0:2);t+=m.ticks_hz/2;ma3_advance(&m,t);
-            CHECK(native_selector==(m.selector&63));
-            divider=(registers[0x23]<<6)|(registers[0x24]>>2);
-            CHECK(divider>=64&&divider<=16383);if(divider!=original)++changes;
-            if(m.water_scale<65)++fast;if(m.water_scale>175)++slow;}
-        CHECK(changes>50&&m.water_faults>50);CHECK(fast&&slow);
-        /* Voice payloads change: framing and the host's clean
-           parameter readback survive. No length/address corruption. */
-        for(i=0;i<100;++i){ss(2);data(0x82);data(0xd5);
-            CHECK(parameter_address==2&&(parameter_value&0xc0)==0xc0);
-            CHECK(read_parameter(2)==0x55);}
-        {unsigned errors=0;
-            count=0;ss(2);data(0);data(0);data(0x80);data(0);data(0xa0);
-            CHECK(m.packet_length==4096&&m.packet_address==0);
-            CHECK(values[count-2]==0&&values[count-1]==0xa0);
-            for(i=0;i<4096;++i){unsigned delta;count=0;data(0x55);
-                CHECK(count==1&&ports[0]==1);delta=values[0]^0x55;
-                CHECK(!delta||delta==1||delta==2||delta==4||delta==8);
-                if(delta)++errors;}
-            CHECK(errors>0&&errors<200);CHECK(m.packet_length==0&&changed_length==4096);
-            CHECK(m.parameter_ram[0]==0x55);
-        }
-        {unsigned expression_changes=0;
-            for(i=0;i<100;++i){count=0;ss(2);data(0x84);data(0xd5);
-                CHECK(parameter_address==4&&(parameter_value&0xc0)==0xc0);
-                if(parameter_value!=0xd5)++expression_changes;}
-            CHECK(expression_changes>0);CHECK(m.parameter_ram[4]==0x55);
-            for(i=0;i<100;++i){count=0;ss(2);data(0x85);data(0xd5);
-                CHECK(parameter_address==5&&parameter_value==0xd5);}
-            /* Delayed RAM length bytes are not sample data. Force a burst
-               across the packet to prove only its payload changes. */
-            m.water_sample_burst=12;count=0;
-            ss(1);data(0x80);data(0);data(0);data(0x80);data(0x84);
-            data(0x55);data(0x55);data(0x55);data(0x55);
-            CHECK(values[count-5]==0x84);
-            for(i=1;i<=4;++i)CHECK(values[count-i]!=0x55);
-        }
-        ma3_set_water(&m,0);CHECK(!m.water&&!water_enabled);
-        CHECK(((registers[0x23]<<6)|(registers[0x24]>>2))==original);
-        ss(2);data(0x82);data(0xd5);CHECK(parameter_value==0xd5);
-    }
-    ma3_destroy(&m);CHECK(!m.hw);bus_destroy(&bus);
-    printf("MA-3: %u checks passed\n",checks);return 0;
+    ma3_destroy(&chip);
+    bus_destroy(&bus);
+    printf("MA-3: %u checks passed\n", checks);
+    return 0;
 }

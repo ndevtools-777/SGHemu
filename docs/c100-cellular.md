@@ -94,7 +94,7 @@ Startup registration can begin after the native startup version query and SIM
 activity, rather than waiting unconditionally for 300 million instructions.
 Queue polling runs only at the native injection-safe entries.
 
-The GUI, CPU interpreter, Yamaha DLL and network worker have separate threads.
+The Win32 GUI, emulation loop and network worker have separate threads.
 The LCD paint path uses a GUI-owned snapshot and never waits for the CPU mutex;
 refresh timers skip busy slices after a bounded wait. CPU slices use a 2 ms wall
 budget, and unpaced execution no longer adds a 16 ms sleep after each slice.

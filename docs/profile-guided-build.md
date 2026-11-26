@@ -14,10 +14,9 @@ tools\build-pgo.cmd optimize
 ```
 
 The instrumented GUI lives in **`build/pgo/sghemu-gui.exe`**. Model descriptors
-are copied there from tracked source files; ROMs, DLLs and existing saved state
-are not copied. Open your firmware folder normally and, if wanted, configure
-your Yamaha DLL. This training instance uses its own settings/NVM below
-`build/pgo/`, not the regular emulator's saved state.
+are copied there from tracked source files. Open your firmware folder normally;
+native MA-3 speaker audio defaults to on. This training instance uses its own
+settings and NVM below `build/pgo/`.
 
 Exercise boot, menus, games, audio and other representative operations, then
 close the training GUI normally so its counters are written. Do not use the

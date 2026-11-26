@@ -121,42 +121,16 @@ void PhoneWindow::addToolMenus(QMenu *file, QMenu *emulation)
     }
 
     emulation->addSeparator();
-    audioAction_ = checkAction(emulation, "Experimental hardware &audio (reset)", audioEnabled_);
+    audioAction_ = checkAction(emulation, "MA-3 &audio (reset)", audioEnabled_);
     connect(audioAction_, &QAction::triggered, this, [this](bool enabled) {
-        if (enabled && audioDll_.isEmpty()) {
-            importAudio();
-            updateUi();
-            return;
-        }
         const bool previous = audioEnabled_;
         audioEnabled_ = enabled;
         if (machine_.loaded && !loadFirmware(firmware_, State::Stopped, storage_.defaults_boot != 0))
             audioEnabled_ = previous;
         audioSettings_.setValue("audio/enabled", audioEnabled_);
         updateUi();
-        if (enabled && !audioError_.isEmpty()) QMessageBox::warning(this, "Hardware audio", audioError_);
+        if (enabled && !audioError_.isEmpty()) QMessageBox::warning(this, "MA-3 audio", audioError_);
     });
-    emulation->addAction("Import Yamaha hardware DLL...", this, &PhoneWindow::importAudio);
-}
-
-void PhoneWindow::importAudio()
-{
-    if (runTimer_.isActive()) setState(State::Paused);
-    const QString path = QFileDialog::getOpenFileName(this, "Import pinned Yamaha hardware DLL", {},
-                                                      "Yamaha hardware DLL (M5_EmuHw.dll);;All files (*)");
-    if (path.isEmpty()) return;
-    const QByteArray oldDll = audioDll_;
-    const bool wasEnabled = audioEnabled_;
-    audioDll_ = QFile::encodeName(path);
-    audioEnabled_ = true;
-    if (machine_.loaded && !loadFirmware(firmware_, State::Stopped, storage_.defaults_boot != 0)) {
-        audioDll_ = oldDll;
-        audioEnabled_ = wasEnabled;
-    }
-    audioSettings_.setValue("audio/hardware_dll", QFile::decodeName(audioDll_));
-    audioSettings_.setValue("audio/enabled", audioEnabled_);
-    if (!audioEnabled_ && !audioError_.isEmpty()) QMessageBox::warning(this, "Hardware audio", audioError_);
-    updateUi();
 }
 
 void PhoneWindow::applyCellular(bool enabled, const QString &network)
@@ -344,13 +318,14 @@ void PhoneWindow::updateDiagnostics()
         out << "PLL: ARM " << m.clock.arm_hz << " Hz / DSP " << m.clock.dsp_hz
             << " Hz; core cycles " << m.cpu.clock_cycles << "; time " << m.clock.nanoseconds / 1e9 << " s"
             << (m.clock.unknown ? " (unrecognized divider)" : "") << '\n';
-    out << "\nMA-3 audio: " << (m.ma3.hw ? "experimental hardware" : "silent")
+    out << "\nMA-3 audio: " << (audio_output_live(m.ma3.output) ? "native PCM" : "muted")
         << "; FIFO bytes " << m.ma3.fifo_bytes << ", IRQs " << m.ma3.irq_events
         << ", FIFO clears " << m.ma3.fifo_clears << ", partial packets dropped " << m.ma3.partial_drops << '\n';
-    if (!audioError_.isEmpty()) out << "Audio error: " << audioError_ << '\n';
+    if (*m.ma3.output_error) out << "Audio error: " << m.ma3.output_error << '\n';
+    else if (!audioError_.isEmpty()) out << "Audio error: " << audioError_ << '\n';
     if (*m.ma3.error) out << "MA-3 error: " << m.ma3.error << '\n';
-    if (m.ma3.hw) {
-        const Ma5HwStats stats = ma5_hw_stats(m.ma3.hw);
+    if (m.ma3.output) {
+        const Ma3Stats stats = ma3_stats(&m.ma3);
         out << "PCM frames " << stats.frames << ", nonzero samples " << stats.nonzero
             << ", peak " << stats.peak << ", host underruns " << stats.underruns << '\n';
     }

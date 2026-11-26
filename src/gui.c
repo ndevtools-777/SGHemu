@@ -45,7 +45,6 @@
 #define ID_CONTINUE 113
 #define ID_SIM 114
 #define ID_AUDIO 115
-#define ID_AUDIO_IMPORT 116
 #define ID_HIGH_PRIORITY 117
 #define ID_HOST_TIME 118
 #define ID_JAVA_EXTENDED 119
@@ -103,10 +102,9 @@ typedef struct {
     int vk_keys[256], running, continuation, pattern, menu_active, sim_override;
     const char *state;
     unsigned last_key;
-    char audio_dll[1024], audio_settings[1024];
+    char audio_settings[1024];
     uint32_t audio_ticks_hz;
-    int audio_enabled, audio_paused, logging;
-    unsigned audio_block;
+    int audio_enabled, logging;
     char emulator_settings[1024];
     int high_priority,host_time,java_extended;
     DWORD time_checkpoint;
@@ -315,17 +313,17 @@ static void update_diagnostics(void)
     if (length < sizeof(text)) length += (size_t)snprintf(text + length, sizeof(text) - length,
         "\r\nMA-3 audio: %s; timebase %u %s/sec; FIFO bytes %llu, IRQs %llu, FIFO clears %llu (partial packet dropped %llu)\r\n"
         "Audio error: %s\r\n",
-        app.m.ma3.hw?"experimental hardware":"silent", app.m.clock.attached?1000000000:app.audio_ticks_hz,
+        audio_output_live(app.m.ma3.output)?"native PCM":"muted", app.m.clock.attached?1000000000u:app.audio_ticks_hz,
         app.m.clock.attached?"nanoseconds":"instruction ticks",
         (unsigned long long)app.m.ma3.fifo_bytes,(unsigned long long)app.m.ma3.irq_events,
         (unsigned long long)app.m.ma3.fifo_clears,(unsigned long long)app.m.ma3.partial_drops,
-        *app.m.ma3.error?app.m.ma3.error:"none");
+        *app.m.ma3.error?app.m.ma3.error:*app.m.ma3.output_error?app.m.ma3.output_error:"none");
     if(app.m.clock.attached&&length<sizeof(text))length+=(size_t)snprintf(text+length,sizeof(text)-length,
         "PLL: ARM %u Hz / DSP %u Hz; core cycles %llu; time %.3f s%s\r\n",
         app.m.clock.arm_hz,app.m.clock.dsp_hz,(unsigned long long)app.m.cpu.clock_cycles,
         (double)app.m.clock.nanoseconds/1000000000.0,app.m.clock.unknown?" (unrecognized divider)":"");
-    if (app.m.ma3.hw && length < sizeof(text)) {
-        Ma5HwStats stats=ma5_hw_stats(app.m.ma3.hw);
+    if (app.m.ma3.output && length < sizeof(text)) {
+        Ma3Stats stats=ma3_stats(&app.m.ma3);
         length += (size_t)snprintf(text + length,sizeof(text)-length,
             "PCM frames %llu, nonzero samples %llu, peak %u, host underruns %llu\r\n",
             (unsigned long long)stats.frames,(unsigned long long)stats.nonzero,stats.peak,
@@ -384,9 +382,7 @@ static void update_ui(void)
     EnableMenuItem(menu, ID_BATTERY_PERCENT, MF_BYCOMMAND | (app.m.battery.enabled ? MF_ENABLED : MF_GRAYED));
     EnableMenuItem(menu, ID_BATTERY_CABLE, MF_BYCOMMAND | ((app.m.battery.enabled || app.m.battery.charger_port) ? MF_ENABLED : MF_GRAYED));
     CheckMenuItem(menu, ID_BATTERY_CABLE, MF_BYCOMMAND | (app.charging ? MF_CHECKED : MF_UNCHECKED));
-    if (app.m.ma3.hw && app.audio_paused != !app.running) {
-        ma5_hw_pause(app.m.ma3.hw, !app.running); app.audio_paused = !app.running;
-    }
+    audio_output_pause(app.m.ma3.output, !app.running);
     EnableMenuItem(menu, ID_SIM, MF_BYCOMMAND | (app.m.sim.attached ? MF_ENABLED : MF_GRAYED));
     CheckMenuRadioItem(menu, ID_ZOOM1, ID_ZOOM3, ID_ZOOM1 + app.zoom - 1, MF_BYCOMMAND);
     EnableMenuItem(menu, ID_RUN, MF_BYCOMMAND | (app.m.loaded && !app.running && !app.m.cpu.halted ? MF_ENABLED : MF_GRAYED));
@@ -575,16 +571,17 @@ static int load_model(void)
             }
             app.time_checkpoint=GetTickCount();
         }
-        if (app.audio_enabled && app.m.ma3.attached && !app.m.cpu.halted) {
-            if (!ma3_enable(&app.m.ma3, app.audio_dll, NULL, 1, app.m.clock.attached?1000000000:app.audio_ticks_hz)) {
-                MessageBoxA(app.window, app.m.ma3.error, "SGHemu - hardware audio unavailable", MB_OK | MB_ICONERROR);
-                *app.m.ma3.error=0; app.audio_enabled=0;
-            } else {
-                app.audio_paused=0;
-                if(!ma3_set_block(&app.m.ma3,app.audio_block))app.audio_block=480;
-
-            }
+        if (app.m.ma3.attached && !app.m.clock.attached)
+            ma3_set_clock(&app.m.ma3, &app.m.cpu.cycles, app.audio_ticks_hz);
+        if (app.audio_enabled && app.m.ma3.attached && !app.m.cpu.halted &&
+            !ma3_open_audio(&app.m.ma3, 1, NULL)) {
+            MessageBoxA(app.window, app.m.ma3.output_error, "SGHemu - audio unavailable", MB_OK | MB_ICONERROR);
+            app.audio_enabled=0;
         }
+        if (!app.m.ma3.output && !phone_io_open(&app.m.phone_io, 1, NULL))
+            app.state="CPU tone output unavailable";
+        ma3_set_detune(&app.m.ma3, app.ma_detune&&strstr(app.m.name,"C100")!=NULL);
+        ma3_set_water(&app.m.ma3, app.ma_water);
     }
     if(!apply_logging(app.logging)){
         app.logging=0;
@@ -634,11 +631,7 @@ static int load_model(void)
         app.ghost_published=malloc(bytes);if(app.ghost_published)memcpy(app.ghost_published,app.m.pixels,bytes);
         app.display_pixels=malloc(bytes);if(app.display_pixels){memcpy(app.display_pixels,app.m.pixels,bytes);app.display_width=app.m.width;app.display_height=app.m.height;}
         app.ghost_tick=GetTickCount();
-        app.m.phone_io.mixed=app.m.ma3.hw!=NULL;
-        if(!phone_io_open(&app.m.phone_io,!app.m.phone_io.mixed,NULL))app.state="CPU tone output unavailable";
-        if(app.m.phone_io.mixed)ma5_hw_set_mixer(app.m.ma3.hw,phone_io_mix,&app.m.phone_io);
-        ma5_hw_set_detune(app.m.ma3.hw,app.ma_detune&&strstr(app.m.name,"C100")!=NULL);
-        ma3_set_water(&app.m.ma3,app.ma_water);memset(&app.speed,0,sizeof(app.speed));
+        memset(&app.speed,0,sizeof(app.speed));
         update_led_icon();}
     return app.m.loaded && !app.m.cpu.halted;
 }
@@ -737,23 +730,6 @@ static LRESULT CALLBACK diagnostics_proc(HWND window, UINT message, WPARAM wpara
     if (message == WM_DESTROY) { app.diagnostics = app.diagnostic_edit = NULL; return 0; }
     return DefWindowProcA(window, message, wparam, lparam);
 }
-static void import_audio(void)
-{
-    OPENFILENAMEA ofn={0}; char path[1024]={0};
-    app.running=0; app.state="Paused"; update_ui();
-    ofn.lStructSize=sizeof(ofn);ofn.hwndOwner=app.window;
-    ofn.lpstrFilter="Yamaha hardware DLL (M5_EmuHw.dll)\0M5_EmuHw.dll\0All files\0*.*\0";
-    ofn.lpstrFile=path;ofn.nMaxFile=sizeof(path);
-    ofn.lpstrTitle="Import pinned Yamaha hardware DLL - experimental MA-3 audio";
-    ofn.Flags=OFN_FILEMUSTEXIST|OFN_PATHMUSTEXIST|OFN_NOCHANGEDIR;
-    if(!GetOpenFileNameA(&ofn))return;
-    strcpy(app.audio_dll,path);app.audio_enabled=1;
-    if(load_model()) {
-        CreateDirectoryA("state",NULL);
-        WritePrivateProfileStringA("audio","hardware_dll",path,app.audio_settings);
-        WritePrivateProfileStringA("audio","enabled",app.audio_enabled?"1":"0",app.audio_settings);
-    }
-}
 static LRESULT CALLBACK battery_proc(HWND window,UINT message,WPARAM wparam,LPARAM lparam)
 {
     (void)lparam;
@@ -844,19 +820,15 @@ static void command(unsigned id)
         app.host_time=!app.host_time;rtc_set_sync(&app.m.rtc,app.host_time);
         app.time_checkpoint=GetTickCount();CreateDirectoryA("state",NULL);
         WritePrivateProfileStringA("emulation","sync_time",app.host_time?"1":"0",app.emulator_settings);break;
-    case ID_AUDIO_IMPORT: import_audio(); break;
     case ID_AUDIO:
-        if (!app.audio_enabled && !*app.audio_dll) import_audio();
-        else {
-            app.audio_enabled=!app.audio_enabled;
-            load_model();
-            CreateDirectoryA("state",NULL);
-            WritePrivateProfileStringA("audio","enabled",app.audio_enabled?"1":"0",app.audio_settings);
-        }
+        app.audio_enabled=!app.audio_enabled;
+        if(app.m.loaded)load_model();
+        CreateDirectoryA("state",NULL);
+        WritePrivateProfileStringA("audio","enabled",app.audio_enabled?"1":"0",app.audio_settings);
         break;
     case ID_MA_DETUNE:
         app.ma_detune=!app.ma_detune;
-        ma5_hw_set_detune(app.m.ma3.hw,app.ma_detune&&strstr(app.m.name,"C100")!=NULL);
+        ma3_set_detune(&app.m.ma3,app.ma_detune&&strstr(app.m.name,"C100")!=NULL);
         CreateDirectoryA("state",NULL);WritePrivateProfileStringA("look_and_feel","c100_ma_detune",app.ma_detune?"1":"0",app.emulator_settings);break;
     case ID_MA_WATER:
         app.ma_water=!app.ma_water;ma3_set_water(&app.m.ma3,app.ma_water);break;
@@ -914,8 +886,8 @@ static void command(unsigned id)
             "F5 Run, F6 Pause, F10 Step, Ctrl+R Reset.\n\n"
             "Open a firmware folder (Ctrl+O) to identify and boot a supported ROM pair.\n"
             "LCD pixels and keypad scanning are handled by the guest firmware.\n"
-            "Experimental hardware audio: import M5_EmuHw.dll from the Emulation menu.\n"
-            "MA-3 translation and instruction timing are not fully calibrated.", "About SGHemu", MB_OK | MB_ICONINFORMATION);
+            "Native Yamaha MA-3 audio on supported models.\n"
+            "MA-3 synthesis and instruction timing are not fully calibrated.", "About SGHemu", MB_OK | MB_ICONINFORMATION);
         break;
     case ID_EXIT: SendMessageA(app.window, WM_CLOSE, 0, 0); return;
     default:
@@ -963,8 +935,7 @@ static HMENU make_menu(void)
     AppendMenuA(gsm,MF_STRING,ID_GSM_GATEWAY,"Internet + built-in WAP gateway");
     AppendMenuA(cell,MF_POPUP,(UINT_PTR)gsm,"GSM");AppendMenuA(emulation,MF_POPUP,(UINT_PTR)cell,"Cellular");
     AppendMenuA(emulation, MF_SEPARATOR, 0, NULL);
-    AppendMenuA(emulation, MF_STRING, ID_AUDIO, "Experimental hardware &audio (reset)");
-    AppendMenuA(emulation, MF_STRING, ID_AUDIO_IMPORT, "Import Yamaha hardware DLL...");
+    AppendMenuA(emulation, MF_STRING, ID_AUDIO, "MA-3 &audio (reset)");
     AppendMenuA(view, MF_STRING, ID_ZOOM1, "LCD zoom &1x"); AppendMenuA(view, MF_STRING, ID_ZOOM2, "LCD zoom &2x"); AppendMenuA(view, MF_STRING, ID_ZOOM3, "LCD zoom &3x");
     AppendMenuA(view, MF_SEPARATOR, 0, NULL); AppendMenuA(view, MF_STRING, ID_PATTERN, "LCD &test pattern"); AppendMenuA(view, MF_STRING, ID_DIAGNOSTICS, "&Diagnostics...");
     AppendMenuA(bar, MF_POPUP, (UINT_PTR)file, "&File"); AppendMenuA(bar, MF_POPUP, (UINT_PTR)emulation, "&Emulation");
@@ -1105,8 +1076,7 @@ static LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam, LP
     emu_lock(); result = window_message(window, message, wparam, lparam, &handled); emu_unlock();
     return handled ? result : DefWindowProcA(window, message, wparam, lparam);
 }
-/* Runs on emu_main with emu_mutex held. paced = hardware audio is attached and
-   its output queue (backpressure inside ma5_hw generate) is the clock. */
+/* Runs on emu_main with emu_mutex held. WaveOut queue backpressure paces live audio. */
 static void emu_slice(LONGLONG frequency, int paced)
 {
     unsigned i, limit = paced ? 20000u : 120000u;
@@ -1179,7 +1149,7 @@ static unsigned __stdcall emu_main(void *argument)
         /* Time-out so shutdown never waits on a lock held by a nested GUI call. */
         if (WaitForSingleObject(emu_mutex, 20) != WAIT_OBJECT_0) continue;
         if (app.running && app.m.loaded && !app.m.cpu.halted) {
-            paced = app.m.ma3.hw != NULL || app.m.phone_io.output != NULL; ran = 1;
+            paced = audio_output_live(app.m.ma3.output) || phone_io_live(&app.m.phone_io); ran = 1;
             if(gui_profile.file){LARGE_INTEGER before={0},after={0};uint64_t ticks;QueryPerformanceCounter(&before);
                 emu_slice(frequency.QuadPart,paced);QueryPerformanceCounter(&after);ticks=(uint64_t)(after.QuadPart-before.QuadPart);
                 ++gui_profile.slices;gui_profile.busy_ticks+=ticks;if(ticks>gui_profile.max_slice)gui_profile.max_slice=ticks;
@@ -1249,11 +1219,9 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR command_line, i
     app.charging=GetPrivateProfileIntA("battery","charging",0,app.emulator_settings)!=0;
     app.high_priority=GetPrivateProfileIntA("emulation","high_priority",0,app.emulator_settings)!=0;
     if(!host_high_priority(app.high_priority))app.high_priority=GetPriorityClass(GetCurrentProcess())==HIGH_PRIORITY_CLASS;
-    GetPrivateProfileStringA("audio","hardware_dll","",app.audio_dll,sizeof(app.audio_dll),app.audio_settings);
-    app.audio_enabled=GetPrivateProfileIntA("audio","enabled",0,app.audio_settings)!=0;
-    app.audio_ticks_hz=GetPrivateProfileIntA("audio","ticks_hz",2166667,app.audio_settings);
-    if(app.audio_ticks_hz<48000||app.audio_ticks_hz>100000000)app.audio_ticks_hz=2166667;
-    app.audio_block=GetPrivateProfileIntA("audio","block",96,app.audio_settings); /* frames per DLL step: 48, 96, 120, 160, 240 or 480 */
+    app.audio_enabled=GetPrivateProfileIntA("audio","enabled",1,app.audio_settings)!=0;
+    app.audio_ticks_hz=GetPrivateProfileIntA("audio","ticks_hz",MA3_DEFAULT_TICKS_HZ,app.audio_settings);
+    if(app.audio_ticks_hz<48000||app.audio_ticks_hz>100000000)app.audio_ticks_hz=MA3_DEFAULT_TICKS_HZ;
     app.logging=GetPrivateProfileIntA("diagnostics","logging",0,app.emulator_settings)!=0;
     InitCommonControlsEx(&common);
     CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);

@@ -1,5 +1,9 @@
 # MA-5 native playback and ABI results
 
+These notes record the earlier MA-5 reference experiments and DLL-backed
+adapter. Current SGHemu uses the [native MA-3 core](../README.md#ma-audio).
+The commands and probes below refer to the old adapter in Git history.
+
 ## Accepted pair
 
 The initial brief named 2.0.1.4, but the supplied files are newer/different

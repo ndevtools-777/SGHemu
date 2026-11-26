@@ -1,123 +1,176 @@
 #include "ma3.h"
 #include <stdio.h>
 #include <string.h>
-/* Exercise the guest-facing ports, including literal bytes with bit 7 set. */
+
+/* Exercise the native chip through the same byte ports used by the firmware. */
+enum { SELECT = 0x200000, DATA = 0x200004 };
+static const uint64_t sequence_tick = UINT64_C(865) * 1157;
 static Bus bus;
-static void ss(unsigned value){bus_write(&bus,0x200000,1,value);}
-static void data(unsigned value){bus_write(&bus,0x200004,1,value);}
-static void parameter(unsigned address,unsigned value)
+static Ma3 chip;
+static int16_t last_sample;
+
+static void select_port(unsigned value) { bus_write(&bus, SELECT, 1, value); }
+static void data(unsigned value) { bus_write(&bus, DATA, 1, value); }
+static unsigned read_data(void) { return bus_read(&bus, DATA, 1); }
+
+static void field(unsigned value)
 {
-    ss(2);
-    if(address>=128){data(address&127);data((address>>7)|128);}
-    else data(address|128);
-    data(value|128);
-}
-static void ram(unsigned address,const unsigned char *bytes,unsigned size)
-{
-    unsigned i;ss(2);data(address&127);data((address>>7)&127);data((address>>14)|128);
-    data(size&127);data((size>>7)|128);
-    for(i=0;i<size;++i)data(bytes[i]);
-}
-static int sample(Ma3 *m,unsigned format)
-{
-    unsigned char descriptor[13]={2,0,0,0xf0,0xf0,0,0,0x40,0x20,0,0,1,0},bytes[512];
-    unsigned i;Ma5HwStats before,after;
-    ma5_hw_reset(m->hw);descriptor[1]=(unsigned char)format;
-    for(i=0;i<sizeof(bytes);++i)bytes[i]=(unsigned char)(format?((i/8)&1?0x30:0xd0):0x77);
-    ram(0x4000,descriptor,sizeof(descriptor));ram(0x4020,bytes,sizeof(bytes));
-    ss(4);data(0);ss(7);data(31);
-    parameter(0x90,0x7c);parameter(0xa0,0x3c);
-    parameter(0x60,0x40);parameter(0x61,0);parameter(0x62,0);
-    parameter(0x63,2);parameter(0x64,0);parameter(0x65,0x40);
-    before=ma5_hw_stats(m->hw);
-    for(i=0;i<20;++i)if(!ma5_hw_generate(m->hw,480))return 0;
-    if(!format) {
-        /* Refill a previously decoded, looping ADPCM buffer while key stays on. */
-        memset(bytes,0x88,sizeof(bytes));ram(0x4020,bytes,sizeof(bytes));
-        for(i=0;i<20;++i)if(!ma5_hw_generate(m->hw,480))return 0;
-        if(ma5_hw_stats(m->hw).adpcm_refreshes!=before.adpcm_refreshes+1)return 0;
+    while (value >= 128) {
+        data(value & 127);
+        value >>= 7;
     }
-    after=ma5_hw_stats(m->hw);
-    { unsigned cursor=ma5_hw_pcm_cursor(m->hw,0);
-      printf("Native cursor: format=%u samples=%u\n",cursor>>24,cursor&0xffff);
-      if(cursor==UINT32_MAX||(cursor>>24)!=format||(cursor&0xffff)>256)return 0;
-    }
-    if(ma5_hw_pcm_cursor(m->hw,32)!=UINT32_MAX)return 0;
-    printf("MA-3 port sample format %u: nonzero=%llu peak=%u\n",format,
-        (unsigned long long)(after.nonzero-before.nonzero),after.peak);
-    return after.nonzero>before.nonzero&&!after.failed&&!bus.fault&&!*m->error;
+    data(value | 128);
 }
-static int stream_event(Ma3 *m,unsigned channel)
+
+static void parameter(unsigned address, unsigned value)
 {
-    unsigned i,result=0,payload;
-    ma5_hw_reset(m->hw);
-    parameter(0x162,0x7f);parameter(0x15e,6);parameter(0x15f,97);
-    ss(1);data(0x8a);data(0x5a+channel);data(0x82);data(0xc3+channel);
-    parameter(0x161,3);
-    for(i=1;i<=20;++i) {
-        if(!ma5_hw_generate(m->hw,48))return 0;
-        ss(0);result=bus_read(&bus,0x200004,1);
-        if(result&(1u<<channel))break;
-    }
-    ss(3);data(0x5a+channel);data(0x82);data(0x80);ss(0x11);
-    payload=bus_read(&bus,0x200004,1);
-    printf("MA-3 stream %u: IRQ=%02x at %u ms payload=%02x\n",channel,result,i,payload);
-    return i>=10&&i<=13&&(result&(1u<<channel))&&payload==0x43+channel;
+    select_port(2);
+    field(address);
+    data(value | 128);
 }
-static int refill_timer(Ma3 *m)
+
+static unsigned read_parameter(unsigned address)
 {
-    unsigned i,irq=0;
-    ma5_hw_reset(m->hw);parameter(0x162,0x7f);
-    parameter(0x152,27);parameter(0x154,20);parameter(0x155,1);
-    for(i=1;i<=30;++i) {
-        if(!ma5_hw_generate(m->hw,48))return 0;
-        ss(0);irq=bus_read(&bus,0x200004,1);if(irq&0x20)break;
-    }
-    printf("MA-3 refill timer: IRQ=%02x at %u ms\n",irq,i);
-    ss(0);data(0x20);ss(0);
-    if(bus_read(&bus,0x200004,1)&0x20)return 0;
-    parameter(0x155,0);
-    return i>=20&&i<=23&&(irq&0x20);
+    select_port(3);
+    field(address);
+    data(0x80);
+    select_port(0x11);
+    return read_data();
 }
-static void timed_payload(unsigned delay,unsigned value)
+
+static void upload(unsigned address, const uint8_t *bytes, unsigned length)
 {
-    ss(1);
-    do {unsigned byte=delay&127;delay>>=7;data(byte|(delay?0:128));}while(delay);
-    data(0x5a);data(0x82);data(value|128);
+    unsigned i;
+    select_port(2);
+    field(address);
+    data(length & 127);
+    data((length >> 7) | 128);
+    for (i = 0; i < length; ++i) data(bytes[i]);
 }
-static int interrupted_sequence(Ma3 *m)
+
+static void control(unsigned bits)
 {
-    unsigned i,irq=0,payload;
-    ma5_hw_reset(m->hw);ss(4);data(0);
-    parameter(0x162,0x7f);parameter(0x15e,6);parameter(0x15f,97);
-    timed_payload(100,1);timed_payload(1000,2);parameter(0x161,3);
-    for(i=0;i<50;++i)if(!ma5_hw_generate(m->hw,480))return 0;
-    parameter(0x161,0);ss(0);data(0xff);
-    ss(4);data(0x20);data(0);
-    timed_payload(100,3);
-    /* C100 refill recovery: clear, refill, sequence-reset pulse, start. */
-    ss(4);data(8);data(0);parameter(0x161,1);
-    for(i=1;i<=200;++i) {
-        if(!ma5_hw_generate(m->hw,48))return 0;
-        ss(0);irq=bus_read(&bus,0x200004,1);if(irq&1)break;
-    }
-    ss(3);data(0x5a);data(0x82);data(0x80);ss(0x11);
-    payload=bus_read(&bus,0x200004,1);
-    printf("MA-3 interrupted sequence: next 100-tick event at %u ms payload=%02x\n",i,payload);
-    return i>=100&&i<=103&&payload==3;
+    select_port(4);
+    data(bits);
+    data(0);
 }
-int main(int argc,char **argv)
+
+static void advance(uint64_t ns)
 {
-    Ma3 m={0};Intc intc={0};unsigned i;int ok=1;
-    if(argc!=2){fprintf(stderr,"Usage: ma3pcmprobe M5_EmuHw.dll\n");return 2;}
-    intc.attached=1;
-    if(!ma3_attach(&m,&bus,&intc,0x200000,0x800000,1157)||
-       !ma3_enable(&m,argv[1],"build/ma3-pcm-probe.wav",0,1000000000)) {
-        fprintf(stderr,"%s\n",m.error);ma3_destroy(&m);bus_destroy(&bus);return 1;
+    bus.ticks += ns;
+    ma3_advance(&chip, bus.ticks);
+}
+
+static void observe(void *context, int16_t *left, int16_t *right, unsigned frames)
+{
+    (void)context;
+    (void)right;
+    if (frames) last_sample = left[frames - 1];
+}
+
+static int sample(unsigned format)
+{
+    static const char *const names[] = {"ADPCM4", "PCM16", "PCM8"};
+    static const unsigned pitch[][3] = {{2,0,60}, {2,64,63}, {0x12,0x54,79}};
+    static const unsigned cursor[][3] = {{0x42,0x42,0x44}, {0x48,0x48,0x4a}, {0x42,0x42,0x43}};
+    uint8_t descriptor[] = {0xfa,0,0,0xf0,0xf0,0,0,0x40,0x20,0,0,1,0}, bytes[512];
+    unsigned i, test;
+    descriptor[1] = (uint8_t)format;
+    for (test = 0; test < sizeof(pitch) / sizeof(*pitch); ++test) {
+        unsigned position, readback;
+        control(0x80);
+        for (i = 0; i < sizeof(bytes); ++i)
+            bytes[i] = (uint8_t)(format == 0 ? 0x77 : format == 1 && !(i & 1u) ? 0 : 0x40);
+        upload(0x4000, descriptor, sizeof(descriptor));
+        upload(0x4020, bytes, sizeof(bytes));
+        select_port(7); data(31);
+        parameter(0x90, 0x7c);
+        parameter(0x60, 0x40); parameter(0x61, 0); parameter(0x62, 0x7c);
+        parameter(0x63, pitch[test][0]); parameter(0x64, pitch[test][1]); parameter(0x65, 0x40);
+        advance(10000000);
+        position = chip.synth.pcm[0].phase >> 16;
+        readback = read_parameter(0x14a);
+        printf("%s pitch %02x,%02x: %u samples in 10 ms, RBO1=%02x\n", names[format],
+               pitch[test][0], pitch[test][1], position, readback);
+        if (position != pitch[test][2] || readback != cursor[format][test] || last_sample <= 0) return 0;
     }
-    for(i=0;i<3;++i)if(!sample(&m,i))ok=0;
-    for(i=0;i<2;++i)if(!stream_event(&m,i))ok=0;
-    if(!refill_timer(&m))ok=0;
-    if(!interrupted_sequence(&m))ok=0;
-    ma3_destroy(&m);bus_destroy(&bus);return ok?0:1;
+
+    /* Refill while still keyed on. The next lap must play the new data. */
+    for (i = 0; i < sizeof(bytes); ++i)
+        bytes[i] = (uint8_t)(format == 0 ? 0xff : format == 1 && !(i & 1u) ? 0 : 0xc0);
+    upload(0x4020, bytes, sizeof(bytes));
+    advance(100000000);
+    printf("%s live refill: last sample %d\n", names[format], (int)last_sample);
+    return last_sample < 0;
+}
+
+static void stream_event(unsigned delay, unsigned address, unsigned value)
+{
+    select_port(1);
+    field(delay);
+    field(address);
+    data(value | 128);
+}
+
+static int sequence_and_timer(void)
+{
+    const uint64_t refill = UINT64_C(37109) * 27 * 20;
+    unsigned irq;
+    control(0x80);
+    parameter(0x162, 0x7f);
+    parameter(0x15e, 6); parameter(0x15f, 97);
+    stream_event(10, 0x15a, 0x43);
+    stream_event(1000, 0x15b, 0x44);
+    parameter(0x161, 1);
+    advance(10 * sequence_tick);
+    select_port(0);
+    irq = read_data();
+    if (!(irq & 1) || read_parameter(0x15a) != 0x43) return 0;
+    printf("Stream start: IRQ=%02x at %.3f ms\n", irq, (double)(10 * sequence_tick) / 1e6);
+
+    parameter(0x161, 0);
+    select_port(0); data(0xff);
+    control(0x20);
+    stream_event(100, 0x15a, 3);
+    control(8);
+    parameter(0x161, 1);
+    advance(100 * sequence_tick - 1);
+    select_port(0);
+    if (read_data() & 1) return 0;
+    advance(1);
+    if (!(read_data() & 1) || read_parameter(0x15a) != 3) return 0;
+    printf("Restart: fresh 100-tick event at %.3f ms\n", (double)(100 * sequence_tick) / 1e6);
+
+    parameter(0x152, 27); parameter(0x154, 20); parameter(0x155, 1);
+    advance(refill - 1);
+    select_port(0);
+    if (read_data() & 0x20) return 0;
+    advance(1);
+    irq = read_data();
+    data(0x20);
+    printf("Refill timer: IRQ=%02x at %.3f ms\n", irq, (double)refill / 1e6);
+    return (irq & 0x20) && !(read_data() & 0x20);
+}
+
+int main(int argc, char **argv)
+{
+    Intc intc = {0};
+    unsigned format;
+    int ok = 1;
+    if (argc > 2) {
+        fputs("Usage: ma3pcmprobe [OUTPUT.wav]\n", stderr);
+        return 2;
+    }
+    intc.attached = 1;
+    if (!ma3_attach(&chip, &bus, &intc, SELECT, 0x800000, 1157) ||
+        !ma3_open_audio(&chip, 0, argc == 2 ? argv[1] : "build/ma3-pcm-probe.wav")) ok = 0;
+    if (ok) {
+        ma3_set_mixer(&chip, observe, NULL);
+        for (format = 0; format < 3; ++format) if (!sample(format)) ok = 0;
+        if (!sequence_and_timer() || !ma3_close_audio(&chip) || bus.fault || *chip.error) ok = 0;
+    }
+    if (!ok) fprintf(stderr, "MA-3 probe failed: %s %s\n", chip.error, chip.output_error);
+    ma3_destroy(&chip);
+    bus_destroy(&bus);
+    return ok ? 0 : 1;
 }
