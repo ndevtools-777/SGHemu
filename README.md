@@ -1,8 +1,9 @@
 # SGHemu
 
 Samsung SGH feature-phone emulator, starting with SGH-C100 / Skyworks CX805.
-Runtime and tools are plain **C17**, MSVC **2026 x86**, `/W4 /WX`.
-Release uses `/O2 /GL /LTCG /MT`; Debug enables `/RTC1`.
+The shared core and tools are **C17**. The Windows build uses MSVC **2026 x86**
+with `/W4 /WX`; Release uses `/O2 /GL /LTCG /MT` and Debug enables `/RTC1`.
+The Linux GUI uses **C++17** and **Qt 5 Widgets** with the same C core.
 The GUI also uses bounded execution and direct RAM access fast paths, without
 idle-loop skipping. [Measurements](docs/bounded-execution.md) and an optional
 [profile-guided build workflow](docs/profile-guided-build.md) are available.
@@ -106,8 +107,10 @@ Windows GNU Make on `PATH` (for example, MSYS2's `mingw32-make.exe`).
 `build.cmd` invokes the Makefile and keeps the original `build/` output paths.
 Run `mingw32-make` directly to build the CLI and GUI under `build/windows/`.
 
-On Linux, run these commands from the repository root with GNU Make and a
-C17 compiler. The checks use synthetic data and need no firmware files.
+On Linux, install GNU Make, a C17 compiler, `pkg-config`, and the ALSA and libcurl
+development files (`libasound2-dev` and `libcurl4-openssl-dev` on Debian/Ubuntu;
+`alsa-lib` and `curl` on Arch). Run from the repository root. The CLI and checks
+do not require Qt, and the checks use synthetic data without firmware files.
 
 ```sh
 make
@@ -132,16 +135,19 @@ make gui
 ```
 
 In **File > Open firmware folder (Ctrl+O)**, select the folder containing both
-ROM files. A recognized pair boots automatically. **Open model config** loads a
-`.cfg` with its own ROM paths; press **Run (F5)** to start it. **Pause (F6)**
+ROM files. A recognized pair boots automatically; if several match, choose a
+version. **Open model config** loads a `.cfg`; the two advanced ROM actions can
+override its first and second images. These actions leave the phone stopped;
+press **Run (F5)** to start it. **Pause (F6)**
 keeps the current LCD frame, **Stop / Reset (Ctrl+R)** cold-resets the phone and
 leaves it stopped, and **Step instruction (F10)** advances a paused machine.
 Use the on-screen keypad, or arrows, Enter/Space, F1–F4 (soft keys, Call/End),
 digits, `*`, `#`, and Backspace. Phone state is saved in `state/` next to the
 model config, as with the CLI.
 
-The host network bridge, live audio and the Yamaha DLL backend are Windows-only.
-Linux picture import supports uncompressed 24- and 32-bit BMP files.
+The Qt GUI includes the phone filesystem and content queue, NVM backup/import,
+cellular controls, diagnostics, and live audio. Its picture importer accepts
+PNG/JPEG/GIF/BMP via Qt; the Linux CLI decodes uncompressed 24- and 32-bit BMP.
 
 `make check` runs the synthetic tests; `make tests` also builds the optional
 ROM tests, and `make tools` builds the available command-line tools. The
@@ -245,6 +251,20 @@ and extract **only `M5_EmuHw.dll`**. In SGHemu, choose
 phone. The emulator does **not** require `M5_EmuSmw5.dll` or a separate voice bank.
 The selected DLL must match the supported hash/version. DLLs are not bundled.
 
+On Linux, navigation tones play through the default ALSA device. For Yamaha
+audio, also install Wine with x86 support and an i686 MinGW compiler (for example,
+`gcc-mingw-w64-i686` on Debian/Ubuntu), then run:
+
+```sh
+make ma5-helper
+```
+
+This puts `ma5bridge.exe` alongside the native executables in `build/linux/`.
+Use `MA5_CC` to select another i686 compiler or `SGHEMU_MA5_HELPER` to point
+SGHemu at a helper in another directory. Wine runs the helper; the native
+frontend mixes the PCM and sends it to ALSA. Detune and Water work with this
+backend too.
+
 ### Audio implementation and standalone diagnostics
 
 MA-5 standalone native file playback with embedded FM voices has been proved;
@@ -261,17 +281,19 @@ pinned; other binaries are rejected. See [audio evidence](docs/ma5-audio.md) and
 The emulator's experimental hardware route consumes the guest's timed FIFO
 packets, translates MA-3 parameter addresses and generates stereo PCM through
 `Hw_Generate`, with chip IRQs routed back to the firmware. Startup output has
-been captured on all three C100 versions. All DLL calls and playback buffers
-belong to one audio thread. Volume mapping and some chip controls are provisional.
+been captured on all three C100 versions. DLL calls stay on the audio worker;
+on Linux that worker runs inside the Wine helper. Volume mapping and some chip
+controls are provisional.
 PCM/ADPCM stream interrupts, refill timing and sample-position reads are now
 translated, but compatibility remains incomplete. The phone filesystem manager
 supports directory inspection, TSV export, NVM backup and content import on
-C100 XEDK1. **File -> Phone filesystem...** opens a two-pane manager: host import
+C100 XEDK1. **File -> Phone filesystem manager...** opens a two-pane manager: host import
 queue on the left, phone files on the right. **Add files...** accepts sounds, PNG/JPEG/GIF/BMP pictures and
 CLDC 1.0 / MIDP 1.0 JARs. Pictures are fitted to 128 x 128 (first frame only).
 Use **Import queue >>** for bulk loading; each item is saved before the next
-starts. JARs run through the phone's native installer. **Java games** reboots into the native MIDlet menu using the
-saved NVM. Other firmware profiles do not yet declare these installer entries.
+starts. For a JAR, wait for the phone's **Installed** screen, then press the
+phone's **Close** softkey. **Java games** reboots into the native MIDlet menu
+using the saved NVM. These installer entries are specific to XEDK1.
 The handset's own Java menu is WAP & Games -> Downloads -> Games and more.
 For larger apps, enable **Emulation -> Extended Java buffers (next import/reset)**
 before importing again. This optional compatibility mode enlarges the native
@@ -279,9 +301,9 @@ installer's working buffers to 1 MiB each; this is **not original hardware behav
 It is off by default and does not replace the native installer or VM. Compilation
 can take minutes. A MIDP 1.0 manifest alone does not guarantee an app will run.
 The **Emulation** menu also provides **High process priority** (off by default)
-and **Sync phone date/time to Windows** (on by default for C100 bring-up profiles).
-Priority changes take effect immediately; switching it off restores Normal.
-Host sync uses Windows local time, including its timezone/DST settings. Switching
+and **Sync phone date/time to host** (on by default for C100 bring-up profiles).
+Priority changes take effect immediately when the host permits them.
+Host sync uses local time, including the timezone/DST settings. Switching
 sync off allows handset clock changes and advances the RTC with emulated time.
 These preferences persist in `state/emulator.ini`; phone NVM stays model-local.
 CLI equivalents: `--high-priority` and `--rtc-sync` (both opt-in on the CLI).
@@ -299,10 +321,11 @@ firmware's NVM as `.snv.sim` and restored on reset/startup.
 gateway** (packet data only). Selecting the built-in gateway shows setup
 instructions: gateway IP **10.0.0.1**, non-secure WAP, port **9201**; test homepage
 **http://sghemu.local/**. Configure these in the phone's WAP browser profile.
-The C gateway uses Windows HTTP/HTTPS fetching and a small text/link conversion
-for old WAP browsers. Java now has a separate asynchronous DNS/TCP bridge for
-native HTTP downloads (including JAD-to-JAR installation) in both internet modes
-on XEDA2/XEDD1/XEDK1. This is not complete GSM, Java UDP, WTLS or a full HTML browser. See
+The gateway fetches HTTP/HTTPS through WinHTTP on Windows or libcurl on Linux,
+with a small text/link conversion for old WAP browsers. Java has a separate
+asynchronous DNS/TCP bridge for native HTTP downloads (including JAD-to-JAR
+installation) in both internet modes on XEDA2/XEDD1/XEDK1. This is not complete
+GSM, Java UDP, WTLS or a full HTML browser. See
 [Java networking](docs/java-network.md) and
 [cellular and SIM details](docs/c100-cellular.md).
 

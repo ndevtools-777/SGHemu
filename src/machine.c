@@ -63,6 +63,19 @@ static int image_path(char *out, size_t capacity, const char *config, const char
     if (prefix + n >= capacity) return 0;
     memcpy(out, config, prefix); memcpy(out + prefix, image, n + 1); return 1;
 }
+static int load_ram_image(uint8_t *data, uint32_t size, const char *config, const char *image)
+{
+    char path[1024];
+    FILE *file;
+    int ok;
+    if (!*image || !image_path(path, sizeof(path), config, image)) return 0;
+    file = fopen(path, "rb");
+    if (!file) return 0;
+    /* RAM was zeroed by the caller. Reject an empty image or one that would
+       extend beyond the mapping, rather than running a truncated program. */
+    ok = fread(data, 1, size, file) != 0 && fgetc(file) == EOF && !ferror(file);
+    return fclose(file) == 0 && ok;
+}
 static void clock_rate(PhoneClock *c)
 {
     unsigned i;uint32_t arm=c->reference_hz,dsp=c->reference_hz;
@@ -132,7 +145,7 @@ int machine_load_pair(Machine *m, const char *path, const char *rom_override,
     FILE *f;
     char line[2048];
     unsigned line_no = 0;
-    int rom = 0, reset_set = 0, valid = 1, second_used = 0;
+    int boot_image = 0, reset_set = 0, valid = 1, second_used = 0;
     machine_destroy(m);cellular_init(&m->cellular);
     m->bus.log = log; m->audio = audio_silent(); m->width = 128; m->height = 128;
     if (strlen(path) >= sizeof(m->config_path)) { strcpy(m->error, "Model path is too long"); return 0; }
@@ -220,7 +233,7 @@ int machine_load_pair(Machine *m, const char *path, const char *rom_override,
             if (!bus_map(&m->bus, base, mapped_size, data, 1, 1)) { free(data); valid = 0; break; }
             if (m->rom_count == 1) second_used = 1;
             ++m->rom_count;
-            rom = 1;
+            boot_image = 1;
         } else if (!strcmp(key, "irom_service")) {
             if (!irom_add(&m->irom, base, trim(comma))) { valid = 0; break; }
         } else if (!strcmp(key, "irom_version")) {
@@ -474,9 +487,13 @@ int machine_load_pair(Machine *m, const char *path, const char *rom_override,
             if(r->irom_vector&&(base<0x80000||base>=0x82000||!(size&1))){valid=0;break;}
             if (!bus_device(&m->bus, base, 4, register_read, register_write, r)) { valid = 0; break; }
         } else if (!strcmp(key, "ram")) {
+            char *image = strchr(comma, ',');
+            if (image) *image++ = 0;
             if (!number(comma, &size) || !size || size > 64u * 1024 * 1024) { valid = 0; break; }
             data = calloc(size, 1);
-            if (!data || !bus_map(&m->bus, base, size, data, 0, 1)) { free(data); valid = 0; break; }
+            if (!data || (image && !load_ram_image(data, size, path, trim(image))) ||
+                !bus_map(&m->bus, base, size, data, 0, 1)) { free(data); valid = 0; break; }
+            if (image) boot_image = 1;
         } else if (!strcmp(key, "alias")) {
             char *next = strchr(comma, ',');
             uint32_t source;
@@ -593,7 +610,7 @@ int machine_load_pair(Machine *m, const char *path, const char *rom_override,
         }
         if (!m->intc.attached || !m->irq_gate_register) valid = 0;
     }
-    if (!valid || !rom || !reset_set || (second_override && !second_used)) {
+    if (!valid || !boot_image || !reset_set || (rom_override && !m->rom_count) || (second_override && !second_used)) {
         snprintf(m->error, sizeof(m->error), "Invalid model or firmware at %.160s:%u", path, line_no);
         bus_destroy(&m->bus); free(m->unplaced_rom); m->unplaced_rom = NULL; m->unplaced_size = 0; return 0;
     }

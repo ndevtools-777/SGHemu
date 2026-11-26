@@ -59,6 +59,7 @@ static void sds_write(void *ctx, uint32_t off, unsigned width, uint32_t value)
            guest's serial services with a halfword write. Open time zeroes the
            register while the port is still disabled, so the enable bit gates it. */
         ++d->transmits;
+        if (d->tx_log) fputc((int)(value & 0xffu), d->tx_log);
         if (d->cable) {
             d->rx = value & 0xffu;
             d->rx_ready = 1;

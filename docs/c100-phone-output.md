@@ -20,13 +20,13 @@ codec gain/route and speech processing are not implemented. A short gate ramp
 reduces clicks. Native silent mode/key-tone selection still decides which calls
 are emitted; musical key sounds that go through MA remain on the Yamaha path.
 
-Without Yamaha, Windows waveOut outputs the CPU/DSP channel directly (no DLL
-required). With Yamaha active, its worker mixes CPU tones into the same stereo
-PCM blocks: a single twelve-slot, 10-ms output queue controls timing for both.
-The former two-clock/queue setup is removed. Silence mixing is bit-exact and
-active mixing saturates to signed 16-bit. Pause/reset control the shared output.
-The GUI opens this output automatically for a configured model. Headless
-execution is silent unless a diagnostic capture is requested.
+Without Yamaha, the GUI outputs the CPU/DSP channel directly via waveOut on
+Windows or ALSA on Linux. With Yamaha active, CPU tones are mixed into the same
+stereo PCM blocks. Windows uses a twelve-slot waveOut queue; on Linux the Wine
+helper supplies Yamaha PCM, and Qt paces execution and plays the mix via ALSA.
+Silence mixing is bit-exact and active mixing saturates to signed 16-bit.
+Pause/reset control the shared output. The GUI opens audio automatically for a
+configured model; the CLI opens output on request.
 
 Model declaration:
 

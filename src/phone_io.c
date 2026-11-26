@@ -2,6 +2,8 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <mmsystem.h>
+#else
+#include "alsa_pcm.h"
 #endif
 #include <math.h>
 #include <stdio.h>
@@ -17,6 +19,8 @@ struct PhoneOutput {
     HWAVEOUT wave;
     HANDLE event;
     WAVEHDR headers[SLOTS];
+#else
+    HostPcm pcm_device;
 #endif
     int16_t pcm[SLOTS][480];
     unsigned slot, fill;
@@ -80,10 +84,6 @@ int phone_io_open(PhoneIo *io, int speakers, const char *wav)
 
     if (!io->configured)
         return 1;
-#ifndef _WIN32
-    if (speakers)
-        return 0;
-#endif
     phone_io_close(io);
     o = calloc(1, sizeof(*o));
     if (!o)
@@ -110,11 +110,24 @@ int phone_io_open(PhoneIo *io, int speakers, const char *wav)
         if (waveOutOpen(&o->wave, WAVE_MAPPER, &fmt, (DWORD_PTR)o->event, 0, CALLBACK_EVENT) != MMSYSERR_NOERROR)
             goto failed;
     }
+#else
+    if (speakers && !host_pcm_open(&o->pcm_device, 1)) goto failed;
 #endif
     return 1;
 failed:
     phone_io_close(io);
     return 0;
+}
+
+int phone_io_live(const PhoneIo *io)
+{
+    const PhoneOutput *o = io->output;
+    if (!o || o->failed) return 0;
+#ifdef _WIN32
+    return o->wave != NULL;
+#else
+    return o->pcm_device.device != NULL;
+#endif
 }
 
 void phone_io_pause(PhoneIo *io, int pause)
@@ -133,6 +146,8 @@ void phone_io_pause(PhoneIo *io, int pause)
         else
             waveOutRestart(o->wave);
     }
+#else
+    host_pcm_pause(&o->pcm_device, pause);
 #endif
 }
 
@@ -152,6 +167,8 @@ static int flush(PhoneIo *io)
             waveOutWrite(o->wave, h, sizeof(*h)) != MMSYSERR_NOERROR)
             return 0;
     }
+#else
+    if (!host_pcm_write(&o->pcm_device, o->pcm[o->slot], o->fill)) return 0;
 #endif
     o->fill = 0;
     o->slot = (o->slot + 1) % SLOTS;
@@ -232,6 +249,8 @@ void phone_io_close(PhoneIo *io)
     }
     if (o->event)
         CloseHandle(o->event);
+#else
+    host_pcm_close(&o->pcm_device);
 #endif
     if (o->wav) {
         /* Replace the provisional WAV header with the final sample count. */

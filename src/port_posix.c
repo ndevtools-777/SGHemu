@@ -167,7 +167,7 @@ void *plat_lock_file(const char *path)
 
     if (!descriptor)
         return NULL;
-    *descriptor = open(path, O_RDWR | O_CREAT, 0666);
+    *descriptor = open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0666);
     if (*descriptor < 0) {
         free(descriptor);
         return NULL;

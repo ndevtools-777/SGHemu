@@ -36,13 +36,40 @@ static uint8_t *picture_buffer(unsigned width, unsigned height, unsigned pixel_b
     return bitmap;
 }
 
+int content_picture_rgb(ContentImport *im, unsigned width, unsigned height,
+    const uint8_t *rgb, size_t stride)
+{
+    uint8_t *bitmap;
+    unsigned x, y, bytes;
+    if (!rgb || !width || !height || width > PICTURE_MAX_DIMENSION || height > PICTURE_MAX_DIMENSION ||
+        stride < width * 3u)
+        return fail(im, "invalid picture dimensions");
+    bytes = width * height * 2;
+    bitmap = picture_buffer(width, height, bytes);
+    if (!bitmap) return fail(im, "cannot allocate the bitmap buffer");
+    for (y = 0; y < height; ++y) {
+        const uint8_t *pixel = rgb + y * stride;
+        uint8_t *out = bitmap + PICTURE_HEADER_SIZE + y * width * 2;
+        for (x = 0; x < width; ++x, pixel += 3, out += 2) {
+            unsigned value = ((pixel[0] >> 3) << 11) | ((pixel[1] >> 2) << 5) | (pixel[2] >> 3);
+            out[0] = (uint8_t)value;
+            out[1] = (uint8_t)(value >> 8);
+        }
+    }
+    free(im->file);
+    im->file = bitmap;
+    im->size = PICTURE_HEADER_SIZE + bytes;
+    im->type = 7;
+    return 1;
+}
+
 #ifdef _WIN32
 static int picture(ContentImport *im)
 {
     IWICImagingFactory *factory=NULL;IWICStream *stream=NULL;
     IWICBitmapDecoder *decoder=NULL;IWICBitmapFrameDecode *frame=NULL;
     IWICBitmapScaler *scaler=NULL;IWICFormatConverter *converter=NULL;
-    IWICBitmapSource *source=NULL;uint8_t *bitmap=NULL;UINT w=0,h=0;unsigned size=0;
+    IWICBitmapSource *source=NULL;uint8_t *rgb=NULL;UINT w=0,h=0,stride;
     HRESULT init=CoInitializeEx(NULL,COINIT_MULTITHREADED),hr;int ok=0;
     if(FAILED(init)&&init!=RPC_E_CHANGED_MODE)return fail(im,"cannot initialize the image decoder");
     hr=CoCreateInstance(&CLSID_WICImagingFactory,NULL,CLSCTX_INPROC_SERVER,&IID_IWICImagingFactory,(void **)&factory);
@@ -61,17 +88,18 @@ static int picture(ContentImport *im)
            FAILED(IWICBitmapScaler_Initialize(scaler,source,w,h,WICBitmapInterpolationModeFant)))goto done;
         source=(IWICBitmapSource *)scaler;
     }
+    /* WIC implementations may lack a 565 conversion. Use RGB here and let
+       the same code as Qt pack the handset's bitmap. */
     if(FAILED(IWICImagingFactory_CreateFormatConverter(factory,&converter))||
-       FAILED(IWICFormatConverter_Initialize(converter,source,&GUID_WICPixelFormat16bppBGR565,
-           WICBitmapDitherTypeNone,NULL,0,WICBitmapPaletteTypeCustom)))goto done;
-    size = w * h * 2;
-    bitmap = picture_buffer(w, h, size);
-    if (!bitmap) goto done;
-    if (FAILED(IWICFormatConverter_CopyPixels(converter, NULL, w * 2, size, bitmap + PICTURE_HEADER_SIZE)))
+        FAILED(IWICFormatConverter_Initialize(converter,source,&GUID_WICPixelFormat24bppRGB,
+            WICBitmapDitherTypeNone,NULL,0,WICBitmapPaletteTypeCustom)))goto done;
+    stride=w*3;
+    rgb=malloc(stride*h);
+    if(!rgb||FAILED(IWICFormatConverter_CopyPixels(converter,NULL,stride,stride*h,rgb)))
         goto done;
-    free(im->file);im->file=bitmap;bitmap=NULL;im->size=size+PICTURE_HEADER_SIZE;im->type=7;ok=1;
-done:
-    free(bitmap);
+    ok=content_picture_rgb(im,w,h,rgb,stride);
+ done:
+    free(rgb);
     if(converter)IWICFormatConverter_Release(converter);
     if(scaler)IWICBitmapScaler_Release(scaler);
     if(frame)IWICBitmapFrameDecode_Release(frame);
@@ -79,7 +107,8 @@ done:
     if(stream)IWICStream_Release(stream);
     if(factory)IWICImagingFactory_Release(factory);
     if(SUCCEEDED(init))CoUninitialize();
-    return ok?1:fail(im,"cannot decode this picture");
+    if(!ok&&!im->failed)return fail(im,"cannot decode this picture");
+    return ok;
 }
 #else
 /* Decode uncompressed 24- and 32-bit BMP files on Linux. */
@@ -223,6 +252,12 @@ static void restore_caller(ContentImport *im, Machine *m)
 }
 int content_import_open(ContentImport *im, Machine *m, const char *path)
 {
+    return content_import_open_decoded(im, m, path, picture);
+}
+
+int content_import_open_decoded(ContentImport *im, Machine *m, const char *path,
+    ContentPictureDecoder decode)
+{
     size_t n = 0;
     const char *ext = strrchr(path, '.');
     memset(im, 0, sizeof(*im));
@@ -258,7 +293,7 @@ int content_import_open(ContentImport *im, Machine *m, const char *path)
     if (ext && (!plat_stricmp(ext, ".png") || !plat_stricmp(ext, ".jpg") ||
                 !plat_stricmp(ext, ".jpeg") || !plat_stricmp(ext, ".gif") ||
                 !plat_stricmp(ext, ".bmp"))) {
-        if (!picture(im)) {
+        if (!decode(im)) {
             free(im->file);
             im->file = NULL;
             return 0;

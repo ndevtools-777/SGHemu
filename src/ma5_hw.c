@@ -11,7 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <limits.h>
-#if !defined(_M_IX86)
+#if !defined(_M_IX86) && !defined(__i386__)
 #error Yamaha hardware backend requires x86
 #endif
 /* 10 ms per slot. 12 slots = 120 ms of queued PCM to ride out host scheduling
@@ -29,7 +29,7 @@ struct Ma5Hw {
     HwWrite write_status, write_data; HwRead read_status, read_data;
     HWAVEOUT wave; WAVEHDR headers[OUTPUT_SLOTS]; int16_t pcm[OUTPUT_SLOTS][960]; unsigned next;
     int16_t stage[960]; unsigned fill; /* short blocks collect here until a full 480-frame buffer is ready */
-    FILE *wav; char path[1024], wav_path[1024], error[256];
+    FILE *wav; wchar_t path[1024]; char wav_path[1024], error[256];
     int speakers, initialized, op, paused, timer_period; unsigned arg, result;
     volatile LONG irq, callbacks,led_token;
     Ma5HwStats stats;int profiling;Ma5HwProfile profile;
@@ -149,24 +149,25 @@ static void __cdecl irq_callback(void)
 {
     if(callback_owner) { InterlockedExchange(&callback_owner->irq,1); InterlockedIncrement(&callback_owner->callbacks); }
 }
-static int verify(const char *path)
+static int verify(const wchar_t *path)
 {
     static const char expected[]="f2702720d01730b3555d042cd22edd5ff58066b59da8f11241236170f26c4732";
     BCRYPT_ALG_HANDLE alg=NULL; BCRYPT_HASH_HANDLE hash=NULL;
     uint8_t *bytes=NULL,digest[32];size_t size;char hex[65];unsigned i;int ok=0;
     DWORD dummy=0,n; BYTE *version_data=NULL;VS_FIXEDFILEINFO *info;UINT length;
-    if(!file_read(path,&bytes,&size)||size>ULONG_MAX)goto done;
+    FILE *file = _wfopen(path,L"rb");
+    if(!file || !file_read_stream(file,&bytes,&size)||size>ULONG_MAX)goto done;
     if(BCryptOpenAlgorithmProvider(&alg,BCRYPT_SHA256_ALGORITHM,NULL,0)<0||
        BCryptCreateHash(alg,&hash,NULL,0,NULL,0,0)<0||BCryptHashData(hash,bytes,(ULONG)size,0)<0||
        BCryptFinishHash(hash,digest,32,0)<0)goto done;
     for(i=0;i<32;++i)sprintf(hex+2*i,"%02x",digest[i]);
     if(strcmp(hex,expected))goto done;
-    n=GetFileVersionInfoSizeA(path,&dummy);if(!n)goto done;version_data=malloc(n);if(!version_data)goto done;
-    if(!GetFileVersionInfoA(path,0,n,version_data)||!VerQueryValueA(version_data,"\\",(LPVOID *)&info,&length)||length<sizeof(*info))goto done;
+    n=GetFileVersionInfoSizeW(path,&dummy);if(!n)goto done;version_data=malloc(n);if(!version_data)goto done;
+    if(!GetFileVersionInfoW(path,0,n,version_data)||!VerQueryValueW(version_data,L"\\",(LPVOID *)&info,&length)||length<sizeof(*info))goto done;
     ok=info->dwFileVersionMS==0x00010006u && info->dwFileVersionLS==0;
 done:
     if(hash)BCryptDestroyHash(hash);if(alg)BCryptCloseAlgorithmProvider(alg,0);
-    free(bytes);free(version_data);return ok;
+    if(file)fclose(file);free(bytes);free(version_data);return ok;
 }
 static void put_le32(uint8_t *p,uint32_t n) {p[0]=(uint8_t)n;p[1]=(uint8_t)(n>>8);p[2]=(uint8_t)(n>>16);p[3]=(uint8_t)(n>>24);}
 static int wav_header(Ma5Hw *h)
@@ -229,7 +230,7 @@ static unsigned __stdcall worker(void *arg)
     /* This thread renders PCM for the sound card; keep it ahead of normal work. */
     SetThreadPriority(GetCurrentThread(),THREAD_PRIORITY_ABOVE_NORMAL);
     if(!verify(h->path)){strcpy(h->error,"Hardware DLL hash/version mismatch or unreadable file (requires pinned 1.6.0.0)");goto failed;}
-    h->dll=LoadLibraryExA(h->path,NULL,LOAD_WITH_ALTERED_SEARCH_PATH);if(!h->dll)goto failed;
+    h->dll=LoadLibraryExW(h->path,NULL,LOAD_WITH_ALTERED_SEARCH_PATH);if(!h->dll)goto failed;
     LOAD(init,"Hw_Initialize");LOAD(term,"Hw_Terminate");LOAD(generate,"Hw_Generate");
     LOAD(write_status,"Hw_WriteStatusFlagReg");LOAD(write_data,"Hw_WriteDataReg");
     LOAD(read_status,"Hw_ReadStatusFlagReg");LOAD(read_data,"Hw_ReadDataReg");
@@ -263,9 +264,15 @@ static unsigned __stdcall worker(void *arg)
         case 8:
             for(i=0;i<1000000;++i) {
                 uintptr_t before,after;unsigned char value;
+#ifdef _MSC_VER
                 __asm {mov before,esp}
                 value=h->read_status();
                 __asm {mov after,esp}
+#else
+                __asm__ volatile ("movl %%esp, %0" : "=r"(before));
+                value=h->read_status();
+                __asm__ volatile ("movl %%esp, %0" : "=r"(after));
+#endif
                 if(before!=after){h->result=0;break;}(void)value;
             }
             break;
@@ -345,11 +352,19 @@ static unsigned command(Ma5Hw *h,int op,unsigned arg)
 }
 Ma5Hw *ma5_hw_open(const char *dll,const char *wav,int speakers,char *error,unsigned error_size)
 {
+    wchar_t path[1024];
+    if(!dll||!MultiByteToWideChar(CP_ACP,0,dll,-1,path,1024)){
+        snprintf(error,error_size,"Invalid hardware DLL path");return NULL;
+    }
+    return ma5_hw_open_wide(path,wav,speakers,error,error_size);
+}
+Ma5Hw *ma5_hw_open_wide(const wchar_t *dll,const char *wav,int speakers,char *error,unsigned error_size)
+{
     Ma5Hw *h=NULL;uintptr_t thread;DWORD n;
     snprintf(error,error_size,"Cannot allocate or initialize hardware audio worker");
     if(InterlockedCompareExchange(&occupied,1,0)) {snprintf(error,error_size,"Hardware DLL is a singleton; another card is active");return NULL;}
     h=calloc(1,sizeof(*h));if(!h)goto failed;
-    n=GetFullPathNameA(dll,sizeof(h->path),h->path,NULL);if(!n||n>=sizeof(h->path))goto failed;
+    n=GetFullPathNameW(dll,1024,h->path,NULL);if(!n||n>=1024)goto failed;
     if(wav){if(strlen(wav)>=sizeof(h->wav_path))goto failed;strcpy(h->wav_path,wav);}h->speakers=speakers;
     h->request=CreateEventA(NULL,FALSE,FALSE,NULL);h->done=CreateEventA(NULL,FALSE,FALSE,NULL);h->ready=CreateEventA(NULL,FALSE,FALSE,NULL);
     if(!h->request||!h->done||!h->ready)goto failed;
