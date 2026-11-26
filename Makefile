@@ -22,7 +22,7 @@ CHECK_TESTS := adpcm bus_data cellular content cpu cpu_cache cpu_diff dsp_mailbo
                machine machine_run nvram peripheral peripheral_schedule phone_io phone_net rtc \
                sim userfs wap wap_http wap_paging
 ROM_TESTS := c100_boot c100_charger c100_compat c100_identity c100_keypad c100_sim
-TOOLS := fwinspect jarinspect phoneprobe
+TOOLS := fwinspect jarinspect ma3pcmprobe ma3replay phoneprobe ringtone_boot_probe
 
 ifeq ($(PLATFORM),windows)
 ifeq ($(OS),Windows_NT)
@@ -34,9 +34,8 @@ OBJ := obj
 EXE := .exe
 PORT_SRC := src/port_win32.c
 WAP_HTTP_SRC := src/wap_http.c
-BACKENDS := src/ma5_hw.c
 CHECK_TESTS += gui_profile
-TOOLS += cpubench ma3pcmprobe ma5hwprobe ma5probe ma5seqprobe perfbench phonedrive
+TOOLS += cpubench perfbench phonedrive
 
 CPPFLAGS += /D_CRT_SECURE_NO_WARNINGS /D_WIN32_WINNT=0x0601 /Isrc
 CFLAGS += /nologo /std:c17 /W4 /WX
@@ -47,7 +46,7 @@ else
 CFLAGS += /O2 /GL /MT /DNDEBUG
 LDFLAGS += /LTCG
 endif
-LDLIBS += bcrypt.lib version.lib winmm.lib windowscodecs.lib ole32.lib uuid.lib ws2_32.lib winhttp.lib
+LDLIBS += winmm.lib windowscodecs.lib ole32.lib uuid.lib ws2_32.lib winhttp.lib
 GUI_LIBS := user32.lib gdi32.lib comctl32.lib comdlg32.lib shell32.lib
 GUI_MANIFEST := /MANIFEST:EMBED /MANIFESTINPUT:src/gui.manifest
 
@@ -61,10 +60,8 @@ else ifeq ($(PLATFORM),linux)
 OBJ := o
 PORT_SRC := src/port_posix.c
 WAP_HTTP_SRC := src/wap_http_curl.c
-BACKENDS := src/ma5_hw_wine.c src/alsa_pcm.c
 PCM_SRC := src/alsa_pcm.c
 PKG_CONFIG ?= pkg-config
-MA5_CC ?= i686-w64-mingw32-gcc
 
 CPPFLAGS += -Isrc
 CFLAGS += -std=c17 -Wall -Wextra
@@ -88,17 +85,18 @@ else
 $(error PLATFORM must be linux or windows)
 endif
 
-# The machine uses one host implementation and one set of platform backends.
+# The MA-3 core and output path are shared by the CLI and both GUIs.
 CPU_SRC := src/arm7.c src/bus.c
 JAR_SRC := src/jar.c src/jar_inflate.c src/file.c
 NVRAM_SRC := src/nvram.c src/firmware.c src/sha256.c $(PORT_SRC)
+AUDIO_SRC := src/audio_output.c $(PCM_SRC)
+MA3_SRC := src/ma3.c src/ma3_synth.c $(AUDIO_SRC)
 MACHINE_SRC := $(addprefix src/,machine.c lp_timer.c cellular.c wap_gateway.c phone_io.c \
                rtc.c battery.c dsp_mailbox.c gpio.c keypad.c sim.c sim_card.c sds_uart.c \
-               sds_dma.c ma3.c irom.c flash.c lcd.c intc.c pmic.c file.c) \
-                $(CPU_SRC) $(PORT_SRC) src/java_net.c src/phone_net.c $(WAP_HTTP_SRC) $(BACKENDS)
+               sds_dma.c irom.c flash.c lcd.c intc.c pmic.c file.c) \
+                 $(CPU_SRC) $(MA3_SRC) $(PORT_SRC) src/java_net.c src/phone_net.c $(WAP_HTTP_SRC)
 APP_SRC := $(MACHINE_SRC) $(NVRAM_SRC) $(JAR_SRC) src/content.c src/host.c src/userfs.c
 
-# Some tests supply their own implementations (for example ma3_test stubs out MA-5).
 TEST_SRC_bus_data            := src/bus.c
 TEST_SRC_cellular            := src/cellular.c src/sim_card.c $(CPU_SRC) $(PORT_SRC)
 TEST_SRC_content             := src/content.c $(JAR_SRC) $(CPU_SRC) $(PORT_SRC)
@@ -112,13 +110,13 @@ TEST_SRC_irom                := $(MACHINE_SRC)
 TEST_SRC_jar                 := $(JAR_SRC)
 TEST_SRC_keypad              := $(MACHINE_SRC)
 TEST_SRC_lp_timer            := src/lp_timer.c src/intc.c src/bus.c
-TEST_SRC_ma3                 := src/ma3.c src/bus.c
+TEST_SRC_ma3                 := $(MA3_SRC) src/bus.c
 TEST_SRC_machine             := $(MACHINE_SRC)
 TEST_SRC_machine_run         := $(MACHINE_SRC)
 TEST_SRC_nvram               := $(MACHINE_SRC) $(NVRAM_SRC)
 TEST_SRC_peripheral          := src/lcd.c src/flash.c src/intc.c src/pmic.c $(CPU_SRC) src/file.c
 TEST_SRC_peripheral_schedule := src/sim.c src/sim_card.c src/sds_dma.c src/sds_uart.c src/intc.c src/bus.c $(PORT_SRC)
-TEST_SRC_phone_io            := src/gpio.c src/phone_io.c $(PCM_SRC) $(CPU_SRC)
+TEST_SRC_phone_io            := src/gpio.c src/phone_io.c $(AUDIO_SRC) $(CPU_SRC)
 TEST_SRC_rtc                 := src/rtc.c src/bus.c
 TEST_SRC_sim                 := src/sim.c src/sim_card.c src/intc.c src/bus.c $(PORT_SRC)
 TEST_SRC_userfs              := src/userfs.c src/bus.c src/file.c
@@ -138,13 +136,12 @@ TEST_SRC_wap_paging          := $(WAP_HTTP_SRC)
 TOOL_SRC_cpubench    := tests/arm7_reference.c $(CPU_SRC)
 TOOL_SRC_fwinspect   := src/file.c
 TOOL_SRC_jarinspect  := $(JAR_SRC)
-TOOL_SRC_ma3pcmprobe := src/ma3.c src/ma5_hw.c src/bus.c src/file.c
-TOOL_SRC_ma5hwprobe  := src/ma5_hw.c src/file.c
-TOOL_SRC_ma5probe    := src/file.c
-TOOL_SRC_ma5seqprobe := src/ma5_hw.c src/file.c
+TOOL_SRC_ma3pcmprobe := $(TEST_SRC_ma3)
+TOOL_SRC_ma3replay   := $(TEST_SRC_ma3)
 TOOL_SRC_perfbench   := $(APP_SRC)
 TOOL_SRC_phonedrive  := $(APP_SRC)
 TOOL_SRC_phoneprobe  := $(APP_SRC)
+TOOL_SRC_ringtone_boot_probe := $(APP_SRC)
 
 test_binaries = $(addprefix $(BUILD)/,$(addsuffix _test$(EXE),$(1)))
 CHECK_BIN := $(call test_binaries,$(CHECK_TESTS))
@@ -208,14 +205,6 @@ $(BUILD)/src/alsa_pcm.o: src/alsa_pcm.c Makefile | $(BUILD)/src
 	@$(PKG_CONFIG) --exists alsa || { echo "Install the ALSA development files (alsa.pc)." >&2; exit 1; }
 	$(CC) $(CPPFLAGS) $(CFLAGS) $$($(PKG_CONFIG) --cflags alsa) -MMD -MP -c "$<" -o "$@"
 
-# The optional Yamaha DLL is x86 Windows code. Compile the same Win32 MA
-# backend into a small Wine helper; Qt and the CLI themselves stay native.
-.PHONY: ma5-helper
-ma5-helper: $(BUILD)/ma5bridge.exe
-$(BUILD)/ma5bridge.exe: tools/ma5bridge.c src/ma5_hw.c src/file.c src/ma5_bridge.h \
-                      src/ma5_hw.h src/adpcm.h src/ma_detune.h src/ma_water.h src/file.h Makefile | $(BUILD)
-	$(MA5_CC) -Isrc -D_WIN32_WINNT=0x0601 -std=c17 -O2 -static $(filter %.c,$^) \
-		-o "$@" -lbcrypt -lversion -lwinmm
 endif
 
 # Runtime logs and test fixtures use build/ even with a custom BUILD path.
@@ -240,7 +229,7 @@ $(BUILD)/tools/%.$(OBJ): tools/%.c Makefile $(HEADERS) | $(BUILD)/tools
 
 # These C files are included directly, so don't link a second copy.
 $(BUILD)/src/jar_inflate.$(OBJ): third_party/puff/puff.c
-$(BUILD)/tests/gui_profile_test.$(OBJ): src/gui.c
+$(BUILD)/tests/gui_profile_test.$(OBJ): src/gui.c src/gui_profile.inc
 $(BUILD)/tests/wap_paging_test.$(OBJ): src/wap_gateway.c
 
 -include $(wildcard $(BUILD)/*/*.d)

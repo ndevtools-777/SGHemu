@@ -211,11 +211,9 @@ PhoneWindow::PhoneWindow() : settings_("state/emulator.ini", QSettings::IniForma
     networkName_ = settings_.value("cellular/network", "Tele2").toString();
     gsmMode_ = settings_.value("cellular/gsm_mode", 0).toUInt();
     if (gsmMode_ > 2) gsmMode_ = 0;
-    audioEnabled_ = audioSettings_.value("audio/enabled", false).toBool();
-    audioDll_ = QFile::encodeName(audioSettings_.value("audio/hardware_dll").toString());
-    audioTicks_ = audioSettings_.value("audio/ticks_hz", 2166667).toUInt();
-    if (audioTicks_ < 48000 || audioTicks_ > 100000000) audioTicks_ = 2166667;
-    audioBlock_ = audioSettings_.value("audio/block", 96).toUInt();
+    audioEnabled_ = audioSettings_.value("audio/enabled", true).toBool();
+    audioTicks_ = audioSettings_.value("audio/ticks_hz", MA3_DEFAULT_TICKS_HZ).toUInt();
+    if (audioTicks_ < 48000 || audioTicks_ > 100000000) audioTicks_ = MA3_DEFAULT_TICKS_HZ;
 
     auto *file = menuBar()->addMenu("&File");
     file->addAction("Open &firmware folder...", this, &PhoneWindow::openFirmwareFolder, QKeySequence::Open);
@@ -286,7 +284,7 @@ PhoneWindow::PhoneWindow() : settings_("state/emulator.ini", QSettings::IniForma
     connect(detune, &QAction::triggered, this, [this](bool enabled) {
         detune_ = enabled;
         settings_.setValue("look_and_feel/c100_ma_detune", enabled);
-        ma5_hw_set_detune(machine_.ma3.hw, enabled && strstr(machine_.name, "C100"));
+        ma3_set_detune(&machine_.ma3, enabled && strstr(machine_.name, "C100"));
     });
     auto *help = menuBar()->addMenu("&Help");
     help->addAction("&About SGHemu", this, [this] {
@@ -570,11 +568,8 @@ void PhoneWindow::setState(State state, const QString &detail)
         releaseKeys();
         lcd_->capture(true);
     }
-    if (audioPaused_ == running) {
-        audioPaused_ = !running;
-        phone_io_pause(&machine_.phone_io, audioPaused_);
-        ma5_hw_pause(machine_.ma3.hw, audioPaused_);
-    }
+    phone_io_pause(&machine_.phone_io, !running);
+    audio_output_pause(machine_.ma3.output, !running);
     updateUi();
 }
 
@@ -619,7 +614,8 @@ void PhoneWindow::updateUi()
     }
     if (water_) message += " | Water";
     statusBar()->showMessage(message);
-    statusBar()->setToolTip(audioError_.isEmpty() ? message : message + '\n' + audioError_);
+    const QString audioError = *machine_.ma3.output_error ? QString::fromUtf8(machine_.ma3.output_error) : audioError_;
+    statusBar()->setToolTip(audioError.isEmpty() ? message : message + '\n' + audioError);
     emu_speed_sample(&speed_, wallClock_.nsecsElapsed(), 1000000000, machine_.clock.nanoseconds,
                      running && machine_.clock.attached);
     speedLabel_->setText(!running ? "0.0%" : speed_.valid ? QString::number(speed_.percent, 'f', 1) + '%' : "--%");
@@ -676,7 +672,7 @@ bool PhoneWindow::emulate(unsigned steps, State afterReset)
 void PhoneWindow::runSlice()
 {
     /* Keep a small PCM lead, then yield to Qt. Silent execution is unpaced. */
-    const bool paced = machine_.ma3.hw || phone_io_live(&machine_.phone_io);
+    const bool paced = audio_output_live(machine_.ma3.output) || phone_io_live(&machine_.phone_io);
     const auto guestTime = [this] {
         return machine_.clock.attached ? machine_.clock.nanoseconds :
                (machine_.cpu.cycles - audioGuestStart_) * UINT64_C(1000000000) / audioTicks_;
@@ -734,25 +730,16 @@ void PhoneWindow::fitLcd()
 void PhoneWindow::openAudio()
 {
     audioError_.clear();
-    if (audioEnabled_ && machine_.ma3.attached) {
-        const unsigned ticks = machine_.clock.attached ? 1000000000 : audioTicks_;
-        if (ma3_enable(&machine_.ma3, audioDll_.constData(), nullptr, 1, ticks)) {
-            if (!ma3_set_block(&machine_.ma3, audioBlock_)) ma3_set_block(&machine_.ma3, 480);
-            ma5_hw_set_detune(machine_.ma3.hw, detune_ && strstr(machine_.name, "C100"));
-        } else {
-            audioError_ = QString::fromUtf8(machine_.ma3.error);
-            machine_.ma3.error[0] = 0; /* A host audio error must not stop the phone. */
-            audioEnabled_ = false;
-        }
+    if (machine_.ma3.attached && !machine_.clock.attached)
+        ma3_set_clock(&machine_.ma3, &machine_.cpu.cycles, audioTicks_);
+    if (audioEnabled_ && machine_.ma3.attached && !ma3_open_audio(&machine_.ma3, 1, nullptr)) {
+        audioError_ = QString::fromUtf8(machine_.ma3.output_error);
+        audioEnabled_ = false;
     }
+    ma3_set_detune(&machine_.ma3, detune_ && strstr(machine_.name, "C100"));
     ma3_set_water(&machine_.ma3, water_);
-    machine_.phone_io.mixed = machine_.ma3.hw != nullptr;
-    if (!phone_io_open(&machine_.phone_io, !machine_.phone_io.mixed, nullptr) && audioError_.isEmpty())
+    if (!machine_.ma3.output && !phone_io_open(&machine_.phone_io, 1, nullptr) && audioError_.isEmpty())
         audioError_ = "Could not open the host audio device for phone tones";
-    if (machine_.phone_io.mixed) ma5_hw_set_mixer(machine_.ma3.hw, phone_io_mix, &machine_.phone_io);
-    audioPaused_ = true;
-    phone_io_pause(&machine_.phone_io, true);
-    ma5_hw_pause(machine_.ma3.hw, true);
 }
 
 void PhoneWindow::syncClock()

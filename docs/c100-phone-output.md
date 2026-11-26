@@ -20,10 +20,9 @@ codec gain/route and speech processing are not implemented. A short gate ramp
 reduces clicks. Native silent mode/key-tone selection still decides which calls
 are emitted; musical key sounds that go through MA remain on the Yamaha path.
 
-Without Yamaha, the GUI outputs the CPU/DSP channel directly via waveOut on
-Windows or ALSA on Linux. With Yamaha active, CPU tones are mixed into the same
-stereo PCM blocks. Windows uses a twelve-slot waveOut queue; on Linux the Wine
-helper supplies Yamaha PCM, and Qt paces execution and plays the mix via ALSA.
+With MA-3 muted, the GUI outputs the CPU/DSP channel directly. With MA-3 output
+enabled, CPU tones are mixed into the native stereo PCM blocks. The shared sink
+uses a twelve-slot WaveOut queue on Windows and the default ALSA device on Linux.
 Silence mixing is bit-exact and active mixing saturates to signed 16-bit.
 Pause/reset control the shared output. The GUI opens audio automatically for a
 configured model; the CLI opens output on request.
@@ -67,16 +66,13 @@ its GPIO function observer is disabled when physical LED wiring is configured.
 
 MA melody LED events are separate from direct GPIO service-light control.
 The firmware uses chip type 2 and emits MA-3 parameter `0146` with a one-bit
-on/off value; no color is encoded in the melody. Previously these events became
-unsupported NOPs. They now map to a private marker in the MA-5 stored no-op
-parameter `01DE`, carrying an event serial and toggle. The existing DLL
-sequencer executes it at the original delta; the worker reports its executed
-value, rather than the host toggling early when the FIFO is filled.
+on/off value; no color is encoded in the melody. The native MA-3 sequencer
+applies the LED write at the packet's scheduled time.
 
 For melody flashes, each on event chooses green, blue, red or yellow, following
 the user's physical-phone observation; this is an HLE palette policy, not a
 claim that those four colors are stored in SMAF. Newer CPU GPIO changes take
-precedence over older melody events and vice versa. The native DLL regression
+precedence over older melody events and vice versa. The native port regression
 checks on after 100 ticks and off after another 10, with no early toggle.
 A Bumer firmware run recorded 50 melody LED events.
 

@@ -8,7 +8,8 @@ Profiling does not change CPU clocks, audio timing, or firmware settings.
 
 Reports appear approximately once per wall-clock second, with a final report
 when logging is disabled, the model resets, or the emulator closes. Each session
-records build mode, model, configured ARM frequency and audio block size.
+records build mode, model, configured ARM frequency and whether MA-3 speaker
+output is active.
 
 | Field | Meaning |
 |---|---|
@@ -16,23 +17,23 @@ records build mode, model, configured ARM frequency and audio block size.
 | `mips`, `instructions` | Interpreted guest instructions per wall second and interval count |
 | `emu_s`, `speed_pct` | Emulated clock progression; 100% means one emulated second per wall second |
 | `cpu_ms` | CPU interpreter thread kernel + user CPU time; excludes time blocked waiting |
-| `slice_ms`, `max_slice_ms` | Total and longest slice wall time, including synchronous audio waits |
+| `slice_ms`, `max_slice_ms` | Total and longest slice wall time, including rendering and audio output waits |
 | `gui_wait_ms`, `max_gui_wait_ms` | GUI command/input waits to acquire the emulation mutex |
 | `timer_skips` | Refresh timers that skipped a busy mutex instead of blocking the UI |
-| `audio_commands` | Synchronous Yamaha worker requests |
-| `audio_generate_wait_ms` | Time waiting for render requests, including output pacing |
-| `audio_other_wait_ms` | Time waiting for other Yamaha worker requests, including scheduling |
+| `audio_commands` | MA-3 parameter commands executed in the interval |
+| `audio_frames` | MA-3 frames advanced in the interval, including when muted |
+| `audio_underruns` | Times the active MA-3 output queue ran dry |
 | `net_locks`, `net_lock_wait_ms` | CPU-side packet queue lock acquisitions and acquisition time |
 | `tx`, `rx` | Packets submitted/received by the emulated transport in the interval |
 | `guest_pc_samples` | Up to eight most frequently sampled guest program-counter addresses |
 | `pc_samples`, `pc_dropped` | Total samples and samples dropped when the bounded table is full |
 
-The emulated-time speed estimate depends on the model's clock interpretation,
-which is not a calibrated hardware measurement. These are overlapping metrics:
-**do not sum slice wall time, CPU time and audio waits**. A high render wait with
-speed near 100% can be normal audio pacing. High CPU time with low speed suggests
-interpreter/peripheral work; frequent other audio waits can indicate excessive
-synchronous DLL exchanges. Compare queue-lock timing before blaming networking.
+The emulated-time speed estimate depends on the model's clock interpretation.
+CPU time and audio output waits overlap with slice wall time. Speed near 100%
+with spare CPU time can reflect normal output pacing. High CPU time with low
+speed suggests interpreter/peripheral work. Compare queue-lock timings when
+examining network overhead. The older `v1` log reported DLL worker timings;
+the native core reports frame and underrun counts in `v2`.
 
 PC sampling runs at slice start and every 1024 slice iterations thereafter, with
 4096 bounded address slots per interval and at most eight lookup probes per

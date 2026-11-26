@@ -24,8 +24,8 @@ The native status bar shows **Running / Paused / Stopped** and emulation speed.
 **100% means real-time speed**, measured from emulated time versus wall time;
 the display averages actual progress over about two seconds and reads zero while paused.
 
-C100 navigation/key tones have an independent CPU/DSP PCM output, even
-without Yamaha DLLs. The program icon shows the native RGB service-LED color.
+C100 navigation/key tones come from CPU/DSP emulation and are mixed with MA-3
+audio when enabled. The program icon shows the native RGB service-LED color.
 **L&F -> LCD ghosting** toggles a saved LCD response effect;
 it does not alter guest pixels or screenshots. See
 [implementation and verification](docs/c100-phone-output.md).
@@ -64,10 +64,10 @@ Pixels come from the guest's x16 LCD writes, not an extracted asset or host UI.
 C100XEDA2, C100XEDD1 and C100XEDK1 have all passed SIM initialization and
 standby captures. This is experimental hardware bring-up, not a complete phone:
 unknown MMIO still continues and overall timing remains provisional, although
-the clock tree uses firmware-derived clock modes. Experimental MA-3
-translation now renders guest startup audio through the MA-5 hardware DLL;
-volume/configuration compatibility remains incomplete. The guest keypad matrix is connected. The default strict profile still stops on unknown
-hardware; folder import selects the documented bring-up profile.
+the clock tree uses firmware-derived clock modes. The native MA-3 core renders
+guest startup and ringtone audio. The guest keypad matrix is connected. The
+default strict profile still stops on unknown hardware; folder import selects
+the documented bring-up profile.
 
 Implemented: shared ARM7TDMI ARM/Thumb interpreter ([optimization and checks](docs/arm7-optimization.md)), ROM/RAM/config loader,
 flash command/status handling, interrupt routing with a diagnostic frame source,
@@ -153,13 +153,10 @@ PNG/JPEG/GIF/BMP via Qt; the Linux CLI decodes uncompressed 24- and 32-bit BMP.
 ROM tests, and `make tools` builds the available command-line tools. The
 Makefile defaults to release; use `CONFIG=debug` for a debug build.
 
-Release ZIPs contain the GUI, CLI, firmware-inspection and standalone audio
-tools, model configs, and documentation. Extract the whole archive and launch
-`build/sghemu-gui.exe`; keep the supplied directory layout. Firmware and Yamaha
-DLLs must be supplied separately. Hardware audio is opt-in; v0.1.0 was silent.
-v0.2.1 improves sequencer restart timing and v0.2.2 adds an experimental ADPCM
-stream-cache correction. Instrument compatibility and occasional stutter remain
-under investigation; real-handset tempo and complete stream playback are unverified.
+Release ZIPs contain the GUI, CLI, firmware-inspection and audio tools, model
+configs, and documentation. Extract the whole archive and launch
+`build/sghemu-gui.exe`; keep the supplied directory layout. Supply your own
+firmware. See each release's notes for its audio requirements.
 
 In the Windows GUI use **File > Open firmware folder (Ctrl+O)**. Pick the folder containing
 both firmware files, or a parent folder containing several sets. Exact SHA-256
@@ -180,8 +177,6 @@ remain direct phone keypad presses. Backspace deletes; Esc cancels queued typing
 Queued text is discarded on focus loss, pause or reset. The toggle is saved;
 turn it off to restore Space as the phone's OK button.
 **Emulation > Virtual SIM inserted (reset)** toggles the card with a cold reset.
-**Emulation > Import Yamaha hardware DLL...** enables experimental audio;
-select the pinned `M5_EmuHw.dll`, then press F5. Settings live in `state/audio.ini`.
 Its synthetic identity is configured in `models/c100/sim/test-sim.cfg`.
 NVM automatically loads/saves under ignored `models/<model>/state/`, separated by firmware
 hashes and memory map. Valid legacy `state/` saves migrate automatically without deleting the originals.
@@ -244,50 +239,39 @@ ROMs are not included in SGHemu releases.
 
 ## MA audio
 
-For MA-3 ringtone/startup sound, download the archive
-[here](https://3.onj.me/phonetones/Software%20and%20Soundbanks/Software/Yamaha%20SMAF/SMAF_newer_DLLs.zip)
-and extract **only `M5_EmuHw.dll`**. In SGHemu, choose
-**Emulation -> Import Yamaha hardware DLL...**, select that file, then run the
-phone. The emulator does **not** require `M5_EmuSmw5.dll` or a separate voice bank.
-The selected DLL must match the supported hash/version. DLLs are not bundled.
+Windows and Linux share the native Yamaha MA-3 core. Startup tones and music
+play through WaveOut on Windows and the default ALSA device on Linux, without
+Yamaha DLLs, Wine or a separate sound bank. **Emulation > MA-3 audio (reset)**
+toggles speaker output and leaves the phone stopped; press F5 to resume. It
+defaults to on and remembers the setting in `state/audio.ini`. Key tones remain
+available with MA-3 output muted.
 
-On Linux, navigation tones play through the default ALSA device. For Yamaha
-audio, also install Wine with x86 support and an i686 MinGW compiler (for example,
-`gcc-mingw-w64-i686` on Debian/Ubuntu), then run:
+Use `--audio` for speakers or `--audio-wav FILE.wav` for 48 kHz stereo capture.
+The options can be combined. `--audio-ticks-hz N` applies only to model profiles
+without a PLL clock; it specifies interpreter ticks/sec. The deprecated
+`--ma5-hw PATH` compatibility option ignores the path.
 
 ```sh
-make ma5-helper
+./build/linux/sghemu MODEL.cfg 80000000 --audio-wav build/startup.wav
 ```
 
-This puts `ma5bridge.exe` alongside the native executables in `build/linux/`.
-Use `MA5_CC` to select another i686 compiler or `SGHEMU_MA5_HELPER` to point
-SGHemu at a helper in another directory. Wine runs the helper; the native
-frontend mixes the PCM and sends it to ALSA. Detune and Water work with this
-backend too.
+The core consumes the guest's byte-port FIFO packets, renders FM and PCM/ADPCM
+voices, and advances timers, IRQs and stream cursors in emulated time even while
+muted. The built-in instrument presets approximate the chip's ROM voices;
+some modulation and timing behavior still differs from the reference.
 
-### Audio implementation and standalone diagnostics
+### Audio diagnostics
 
-MA-5 standalone native file playback with embedded FM voices has been proved;
-`__cdecl` was verified in Ghidra and through 1,000,000 calls without ESP drift.
-The user-supplied updated software 2.2.0.0 / hardware 1.6.0.0 DLL pair is hash
-pinned; other binaries are rejected. See [audio evidence](docs/ma5-audio.md) and
-`MA5libs/doc/README.md` for API details.
+`make tools` builds `ma3pcmprobe [OUTPUT.wav]` to check native stream timing,
+pitch and refill, and `ma3replay TRACE.log OUTPUT.wav [TICKS_HZ]` to replay
+MA-3 port traffic. Use a trace with a consistent timebase for timing comparisons.
+The earlier MA-5 comparisons are recorded in the [historical notes](docs/ma5-audio.md).
 
-```powershell
-.\build\fwinspect.exe models/c100/roms/C100XEDA2/C100XEDA2_1.bin --extract-mmf 0x418cce build/c100-embedded-voice.mmf
-.\build\ma5probe.exe MA5libs build/c100-embedded-voice.mmf 10 1000000
-```
+## Phone filesystem and services
 
-The emulator's experimental hardware route consumes the guest's timed FIFO
-packets, translates MA-3 parameter addresses and generates stereo PCM through
-`Hw_Generate`, with chip IRQs routed back to the firmware. Startup output has
-been captured on all three C100 versions. DLL calls stay on the audio worker;
-on Linux that worker runs inside the Wine helper. Volume mapping and some chip
-controls are provisional.
-PCM/ADPCM stream interrupts, refill timing and sample-position reads are now
-translated, but compatibility remains incomplete. The phone filesystem manager
-supports directory inspection, TSV export, NVM backup and content import on
-C100 XEDK1. **File -> Phone filesystem manager...** opens a two-pane manager: host import
+The phone filesystem manager supports directory inspection, TSV export, NVM
+backup and content import on C100 XEDK1. **File -> Phone filesystem manager...**
+opens a two-pane manager: host import
 queue on the left, phone files on the right. **Add files...** accepts sounds, PNG/JPEG/GIF/BMP pictures and
 CLDC 1.0 / MIDP 1.0 JARs. Pictures are fitted to 128 x 128 (first frame only).
 Use **Import queue >>** for bulk loading; each item is saved before the next
@@ -337,11 +321,7 @@ samples and filters them, so its battery bars update later. Reset with the cable
 connected to see the charging screen. At 100%, charger completion after a
 20-emulated-second settling delay lets the firmware hatch the egg. The voltage
 curve and charger delay are provisional; see [battery details](docs/c100-battery.md).
-CPU/DSP navigation tones are implemented separately from MA synthesis. See
-[content import details](docs/c100-content-import.md).
-CLI: `--ma5-hw PATH`, optional `--audio-wav FILE` and `--audio-ticks-hz N`.
-The tick rate is not a measured CPU clock. DLL download requires explicit consent;
-no firmware, DLL, voice bank or generated proprietary asset is distributed.
+See [content import details](docs/c100-content-import.md).
 
 CLI Java examples (use your own game file):
 
@@ -365,7 +345,7 @@ license preserved separately from the project's WTFPL.
 | `tools/` | C firmware/audio tools and Ghidra Java analysis scripts |
 | `tests/` | Instruction programs, protocol fixtures, optional real-ROM regressions |
 | `docs/` | Reverse-engineering evidence and remaining hardware work |
-| `models/**/roms/`, `MA5libs/*.dll`, `build/` | Ignored private inputs/artifacts |
+| `models/**/roms/`, `build/` | Ignored private inputs and build artifacts |
 
 The CLI (`src/main.c`), Windows GUI (`src/gui.c`) and Linux GUI (`src/gui_qt.cpp`)
 share `src/machine.c`, which loads the model and runs the emulated phone. Host

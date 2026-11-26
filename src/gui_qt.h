@@ -83,7 +83,6 @@ private:
     void sendSms();
     void updateCall();
     void answerCall(bool accept);
-    void importAudio();
 
     void showFilesystem();
     void refreshFilesystem();
@@ -128,9 +127,8 @@ private:
     QDialog *callDialog_ = nullptr;
     QLabel *callLabel_ = nullptr;
     QPushButton *acceptCall_ = nullptr, *declineCall_ = nullptr;
-    bool audioEnabled_ = false, audioPaused_ = true;
-    QByteArray audioDll_;
-    unsigned audioTicks_ = 2166667, audioBlock_ = 96;
+    bool audioEnabled_ = true;
+    unsigned audioTicks_ = MA3_DEFAULT_TICKS_HZ;
 
     QDialog *diagnostics_ = nullptr;
     QPlainTextEdit *diagnosticsText_ = nullptr;

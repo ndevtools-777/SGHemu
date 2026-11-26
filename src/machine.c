@@ -625,6 +625,11 @@ int machine_load_pair(Machine *m, const char *path, const char *rom_override,
     }
     arm7_reset(&m->cpu, &m->bus, m->reset);
     m->decode_cache=arm7_cache_create();m->cpu.cache=m->decode_cache; /* allocation failure uses uncached decoding */
+    if (m->ma3.attached) {
+        if (m->clock.attached) ma3_set_clock(&m->ma3, &m->clock.nanoseconds, 1000000000);
+        else ma3_set_clock(&m->ma3, &m->cpu.cycles, MA3_DEFAULT_TICKS_HZ);
+        if (m->phone_io.configured) ma3_set_mixer(&m->ma3, phone_io_mix, &m->phone_io);
+    }
     m->loaded = 1;
     if (!*m->name) strcpy(m->name, "SGH model");
     return 1;
@@ -677,13 +682,18 @@ int machine_step(Machine *m, int continuation)
             m->cpu.error=m->cellular.error;m->cpu.halted=1;return 0;
         }
     }
-    if(m->phone_io.output&&!m->phone_io.mixed)phone_io_advance(&m->phone_io,m->clock.nanoseconds);
-    if((m->cpu.cpsr&ARM_T)&&(m->cpu.r[15]==m->phone_io.tone_entry||
-        m->cpu.r[15]==m->phone_io.tone_stop||m->cpu.r[15]==m->phone_io.gpio_entry))
+    if (m->ma3.attached && *m->ma3.clock >= m->ma3.next_event) ma3_advance(&m->ma3, *m->ma3.clock);
+    if(m->phone_io.output&&!m->phone_io.mixed&&m->clock.nanoseconds-m->phone_io.last_ns>=1000000u)
+        phone_io_advance(&m->phone_io,m->clock.nanoseconds);
+    if(m->phone_io.configured&&(m->cpu.cpsr&ARM_T)&&(m->cpu.r[15]==m->phone_io.tone_entry||
+        m->cpu.r[15]==m->phone_io.tone_stop||m->cpu.r[15]==m->phone_io.gpio_entry)) {
+        /* Finish the old tone through the time of the guest driver call. */
+        if (m->ma3.output) ma3_advance(&m->ma3, *m->ma3.clock);
+        phone_io_advance(&m->phone_io, m->clock.nanoseconds);
         phone_io_observe(&m->phone_io,&m->cpu);
+    }
     sim_tick(&m->sim,m->cpu.cycles);
     if(m->sds_dma.attached&&m->cpu.cycles>=m->sds_dma.next_event)sds_dma_advance(&m->sds_dma,m->cpu.cycles);
-    if(m->ma3.hw)ma3_advance(&m->ma3,m->clock.attached?m->clock.nanoseconds:m->cpu.cycles);
     if (*m->ma3.error) { m->cpu.halted=1; m->cpu.error=m->ma3.error; return 0; }
     if(m->lp_timer.attached&&(m->clock.nanoseconds>=m->lp_timer.next_event||
         ((m->intc.enabled&m->lp_timer.cal_mask)!=m->lp_timer.observed_enabled)))lp_timer_advance(&m->lp_timer);
@@ -756,8 +766,7 @@ unsigned machine_run(Machine *m,unsigned count,int continuation)
         if(m->lp_timer.attached)ns_due=earlier(ns_due,m->lp_timer.next_event);
         if(m->battery.complete_port)ns_due=earlier(ns_due,m->battery.complete_due);
         if(m->phone_io.output&&!m->phone_io.mixed)ns_due=earlier(ns_due,m->phone_io.last_ns+1000000u);
-        if(m->ma3.hw){uint64_t due=m->ma3.next_sample;
-            if(m->ma3.water)due=earlier(due,m->ma3.water_next);
+        if(m->ma3.attached){uint64_t due=m->ma3.next_event;
             if(m->clock.attached)ns_due=earlier(ns_due,due);else cycle_due=earlier(cycle_due,due);
         }
         if(m->intc.attached&&m->intc.period&&(m->intc.enabled&m->intc.periodic_bit)){

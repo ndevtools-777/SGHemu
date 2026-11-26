@@ -24,7 +24,8 @@ static inline unsigned ma_detune_pcm(MaDetune *d,const int16_t *left,const int16
             while(d->phase<=MA_DETUNE_ONE){
                 int64_t l=(int64_t)d->left+((int64_t)(left[i]-d->left)*(int64_t)d->phase)/(int64_t)MA_DETUNE_ONE;
                 int64_t r=(int64_t)d->right+((int64_t)(right[i]-d->right)*(int64_t)d->phase)/(int64_t)MA_DETUNE_ONE;
-                if(n==capacity)return 0;out_left[n]=(int16_t)l;out_right[n++]=(int16_t)r;d->phase+=MA_DETUNE_STEP;
+                if(n==capacity)return 0;
+                out_left[n]=(int16_t)l;out_right[n++]=(int16_t)r;d->phase+=MA_DETUNE_STEP;
             }
             d->phase-=MA_DETUNE_ONE;
         }

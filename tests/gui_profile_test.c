@@ -24,7 +24,7 @@ int main(void)
     f=fopen("build/gui-profile.log","rb");CHECK(f!=NULL);if(f){CHECK(fseek(f,marker,SEEK_SET)==0);n=fread(text,1,sizeof(text)-1,f);text[n]=0;fclose(f);
         CHECK(strstr(text,"instructions=1000000")!=NULL);CHECK(strstr(text,"speed_pct=")!=NULL);
         CHECK(strstr(text,"guest_pc_samples 01151010:20 01222bb4:1")!=NULL);
-        CHECK(strstr(text,"audio_generate_wait_ms=")!=NULL&&strstr(text,"net_lock_wait_ms=")!=NULL);}
+        CHECK(strstr(text,"audio_frames=")!=NULL&&strstr(text,"net_lock_wait_ms=")!=NULL);}
     CHECK(apply_logging(1));CHECK(ftell(gui_profile.file)>marker);CHECK(apply_logging(0));CHECK(SetCurrentDirectoryA(root));
     /* A clear followed by a redraw must not become a ghosting target. */
     {uint32_t live[2]={0xffffff,0xffffff},target[2]={0xffffff,0xffffff},ghost[2]={0xffffff,0xffffff};

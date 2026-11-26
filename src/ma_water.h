@@ -3,7 +3,7 @@
 #include <stdint.h>
 #include <string.h>
 /* Deliberately fictional shorted-pin effect, applied to MA PCM before CPU
-   tones are mixed. Never sends malformed packets/pointers to the native DLL. */
+   tones are mixed. Packet framing and instrument pointers stay intact. */
 typedef struct {uint32_t rng;unsigned remaining,mode,hold,period;int enabled;int16_t left,right;} MaWater;
 static inline uint32_t ma_water_random(uint32_t *state)
 {

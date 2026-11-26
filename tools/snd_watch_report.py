@@ -1,4 +1,4 @@
-"""Summarise the MA3_SNDWATCH guest-state log (see MA3_SNDWATCH in src/ma3.c).
+"""Summarise a historical MA3_SNDWATCH guest-state log.
 
 The watch samples the firmware sound driver's state bytes at 0x00407F44 once per
 instruction and logs every transition:
@@ -16,9 +16,8 @@ The suspect silence chain is
     ctr dry -> eos=1 -> eos=2 -> next FIFO IRQ -> mask=9f (MaDevDrv_StopSequencer)
 
 so this script prints the transition timeline and, for each mask=9f write, the
-most recent eos=1/eos=2 transition that preceded it. A frontend run attached with
---ma5-hw is required: the offline replay has no CPU and maps no RAM, so the watch
-stays silent there.
+most recent eos=1/eos=2 transition that preceded it. The log was captured from
+the guest CPU in old builds; offline MA-3 port replays cannot produce it.
 
 Usage: python tools\\snd_watch_report.py [build/ma3-sndwatch.log] [ticks_per_sec]
 """

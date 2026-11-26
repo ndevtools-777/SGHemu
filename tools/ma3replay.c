@@ -1,72 +1,72 @@
-/* Replay a captured MA-3 register trace through the real translation layer and
-   the pinned M5_EmuHw.dll, emitting a WAV plus a marked trace. The recorded
-   timestamps are instruction ticks; ticks_hz converts them to emulated time.
-   This drives the exact adapter code (src/ma3.c) with the exact guest traffic,
-   without ROMs, firmware or keypad automation. */
+/* Replay a guest MA-3 port trace without loading firmware. The trace's time
+   column is in the specified ticks/sec (1000000000 for a nanosecond trace). */
 #include "ma3.h"
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 
 static Bus bus;
 
 int main(int argc, char **argv)
 {
-    Ma3 m; Intc intc; FILE *f, *trace = NULL;
-    char line[512];
-    unsigned long long cycle, last = 0, drain;
-    unsigned ticks_hz = 11100000, off, value, sel, pc;
-    char rw; int first = 1;
-    const char *dll, *log, *wav;
-
-    if (argc < 4) {
-        fprintf(stderr, "Usage: ma3replay M5_EmuHw.dll trace.log out.wav [ticks_hz] [out-trace.log]\n");
+    Ma3 m = {0};
+    Intc intc = {0};
+    FILE *input = NULL;
+    Ma3Stats stats;
+    char line[512], direction;
+    unsigned long long cycle, first = 0, last = 0;
+    uint64_t elapsed = 0;
+    unsigned rate = MA3_DEFAULT_TICKS_HZ, off, value, pc;
+    int success = 0, have_event = 0;
+    if (argc < 3 || argc > 5) {
+        fputs("Usage: ma3replay TRACE.log OUTPUT.wav [TICKS_HZ] [OUTPUT_TRACE.log]\n", stderr);
         return 2;
     }
-    dll = argv[1]; log = argv[2]; wav = argv[3];
-    if (argc > 4) ticks_hz = (unsigned)strtoul(argv[4], NULL, 0);
-    if (argc > 5) { trace = fopen(argv[5], "w"); if (!trace) { perror(argv[5]); return 1; } }
-
-    memset(&m, 0, sizeof(m)); memset(&intc, 0, sizeof(intc));
+    if (argc > 3) {
+        char *end;
+        unsigned long n;
+        errno = 0;
+        n = strtoul(argv[3], &end, 0);
+        if (end == argv[3] || *end || errno || n < AUDIO_RATE || n > 1000000000) return 2;
+        rate = (unsigned)n;
+    }
+    input = fopen(argv[1], "r");
+    if (!input) { perror(argv[1]); return 1; }
     intc.attached = 1;
-    if (!ma3_attach(&m, &bus, &intc, 0x200000, 0x800000, 1157)) { fprintf(stderr, "attach failed\n"); return 1; }
-    if (!ma3_enable(&m, dll, wav, 0, ticks_hz)) { fprintf(stderr, "MA-3 hardware: %s\n", m.error); return 1; }
-    ma3_set_block(&m, 96);
-    m.trace = trace;
-
-    f = fopen(log, "r");
-    if (!f) { fprintf(stderr, "Cannot open %s\n", log); return 1; }
-    while (fgets(line, sizeof(line), f)) {
-        if (sscanf(line, "%llu %x %c %u %x sel=%x", &cycle, &pc, &rw, &off, &value, &sel) != 6) continue;
-        if (cycle < last) continue;
-        if (first) { m.last_tick = cycle; first = 0; } /* Start emulated time at the trace's first event. */
-        bus.ticks = cycle; /* Keep the replayed trace's timestamps meaningful. */
-        ma3_advance(&m, cycle);
-        if (rw == 'W') bus_write(&bus, 0x200000 + off, 1, value);
+    if (!ma3_attach(&m, &bus, &intc, 0x200000, 0x800000, 1157)) goto done;
+    ma3_set_clock(&m, &elapsed, rate);
+    if (!ma3_open_audio(&m, 0, argv[2])) goto done;
+    if (argc > 4) {
+        m.trace = fopen(argv[4], "w");
+        if (!m.trace) { perror(argv[4]); goto done; }
+    }
+    while (fgets(line, sizeof(line), input)) {
+        if (sscanf(line, "%llu %x %c %u %x", &cycle, &pc, &direction, &off, &value) != 5) continue;
+        if ((direction != 'R' && direction != 'W') || (off != 0 && off != 4) || cycle < last) goto done;
+        if (!have_event) { first = cycle; have_event = 1; }
+        elapsed = cycle - first;
+        bus.ticks = cycle;
+        bus.pc = pc;
+        if (direction == 'W') bus_write(&bus, 0x200000 + off, 1, value);
         else bus_read(&bus, 0x200000 + off, 1);
+        if (*m.error) goto done;
         last = cycle;
     }
-    fclose(f);
-
-    drain = last + (unsigned long long)ticks_hz * 2; /* Flush ~2 s of trailing audio. */
-    ma3_advance(&m, drain);
-
-    if (*m.error) printf("MA-3 error: %s\n", m.error);
-    {
-        Ma5HwStats s = ma5_hw_stats(m.hw);
-        printf("PCM frames=%llu nonzero=%llu peak=%u host-underruns=%llu adpcm-refreshes=%llu failed=%d\n",
-               (unsigned long long)s.frames, (unsigned long long)s.nonzero, s.peak,
-               (unsigned long long)s.underruns, (unsigned long long)s.adpcm_refreshes, s.failed);
+    if (ferror(input) || !have_event) goto done;
+    elapsed += (uint64_t)rate * 2; /* Render the release and any remaining delayed commands. */
+    if (!ma3_close_audio(&m) || *m.error) goto done;
+    stats = ma3_stats(&m);
+    printf("PCM frames=%llu nonzero=%llu peak=%u; RAM reads=%llu commands=%llu unsupported=%llu\n",
+           (unsigned long long)stats.frames, (unsigned long long)stats.nonzero, stats.peak,
+           (unsigned long long)m.ram_reads, (unsigned long long)m.commands, (unsigned long long)m.unsupported);
+    success = 1;
+done:
+    fclose(input);
+    if (!success) {
+        const char *error = *m.error ? m.error : m.output_error;
+        fprintf(stderr, "%s\n", *error ? error : "MA-3 trace replay failed");
     }
-    printf("MA-3 reads=%llu writes=%llu fifo-bytes=%llu irq=%llu translated=%llu unsupported=%llu clears=%llu partial-drops=%llu ram-reads=%llu\n",
-           (unsigned long long)m.reads, (unsigned long long)m.writes, (unsigned long long)m.fifo_bytes,
-           (unsigned long long)m.irq_events, (unsigned long long)m.translated, (unsigned long long)m.unsupported,
-           (unsigned long long)m.fifo_clears, (unsigned long long)m.partial_drops, (unsigned long long)m.ram_reads);
-    printf("unsupported addresses:");
-    { unsigned i; for (i = 0; i < m.unsupported_kinds; ++i)
-        printf(" %03x%s", m.unsupported_log[i].address, m.unsupported_log[i].delayed ? "(fifo)" : "");
-      printf("\n"); }
-    ma5_hw_diagnostics(m.hw);
     ma3_destroy(&m);
-    return 0;
+    bus_destroy(&bus);
+    return success ? 0 : 1;
 }

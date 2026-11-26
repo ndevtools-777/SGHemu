@@ -7,6 +7,18 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+static int open_audio(Machine *m, int speakers, const char *wav)
+{
+    if (!ma3_open_audio(&m->ma3, speakers, wav)) {
+        fprintf(stderr, "%s\n", m->ma3.output_error);
+        return 0;
+    }
+    m->ma3.trace = fopen("build/ma3-traffic.log", "w");
+    if (!m->ma3.trace) perror("build/ma3-traffic.log");
+    return m->ma3.trace != NULL;
+}
+
 int main(int argc, char **argv)
 {
     Machine m = {0};
@@ -28,13 +40,14 @@ int main(int argc, char **argv)
     const char *fs_output=NULL;
     const char *nv_input = NULL, *nv_output = NULL;
     const char *state_directory = NULL; /* Default: model-local, firmware-hashed. */
-    const char *hardware_dll=NULL,*audio_wav=NULL;
-    uint32_t audio_ticks_hz=2166667;
+    const char *audio_wav=NULL;
+    int speakers=0,legacy_audio=0;
+    uint32_t audio_ticks_hz=MA3_DEFAULT_TICKS_HZ;
     int persistent = 1, storage_ready = 0, sim_override = -1;
     FirmwareMatch *matches = NULL;
     unsigned first_argument = 2;
     FILE *trace = NULL, *access_log = NULL, *uart_log = NULL, *log;
-    if (argc < 2) { puts("sghemu MODEL.cfg | --folder PATH [instruction-budget] [--lcd-out FILE.bmp]\nOptions: --continue-unmapped --trace --mmio-trace --until ADDRESS --service\n         --uart-out FILE (bytes sent by the model's serial port)\n         --nv-load FILE.snv --nv-save FILE.snv (diagnostic import/export)\n         --state-dir DIRECTORY --no-persist --sim present|none\n         --ma5-hw M5_EmuHw.dll [--audio-wav FILE.wav]\n         --audio-ticks-hz N (legacy profiles only, not CPU MHz)\n         --fs-list FILE.tsv (directory metadata, not file contents)\n         --import FILE (sound/picture or MIDP 1.0 JAR through the guest)\n         --java-menu (boot the native installed-MIDlet menu)\n         --extended-java (optional larger Java working buffers)\n         --rtc-sync --high-priority --battery 0..100 --charging\nNVM auto-loads/saves beside the model config in state/. Run from repo root; see build/unmapped.log."); return 2; }
+    if (argc < 2) { puts("sghemu MODEL.cfg | --folder PATH [instruction-budget] [--lcd-out FILE.bmp]\nOptions: --continue-unmapped --trace --mmio-trace --until ADDRESS --service\n         --uart-out FILE (bytes sent by the model's serial port)\n         --nv-load FILE.snv --nv-save FILE.snv (diagnostic import/export)\n         --state-dir DIRECTORY --no-persist --sim present|none\n         --audio (MA-3 speakers) --audio-wav FILE.wav (stereo capture)\n         --audio-ticks-hz N (legacy profiles only, not CPU MHz)\n         --fs-list FILE.tsv (directory metadata, not file contents)\n         --import FILE (sound/picture or MIDP 1.0 JAR through the guest)\n         --java-menu (boot the native installed-MIDlet menu)\n         --extended-java (optional larger Java working buffers)\n         --rtc-sync --high-priority --battery 0..100 --charging\nNVM auto-loads/saves beside the model config in state/. Run from repo root; see build/unmapped.log."); return 2; }
     model = argv[1];
     if (!strcmp(model, "--folder")) {
         unsigned count;
@@ -47,7 +60,11 @@ int main(int argc, char **argv)
         if (count > 1) puts("CLI selects the first match; use the GUI to select another detected version.");
     }
     for (i = first_argument; i < (unsigned)argc; ++i) {
-        if (!strcmp(argv[i],"--ma5-hw")&&i+1<(unsigned)argc)hardware_dll=argv[++i];
+        if (!strcmp(argv[i],"--audio"))speakers=1;
+        else if (!strcmp(argv[i],"--ma5-hw")&&i+1<(unsigned)argc) {
+            ++i; /* Older scripts supplied a DLL path. Native audio needs no file. */
+            legacy_audio=1;
+        }
         else if(!strcmp(argv[i],"--audio-wav")&&i+1<(unsigned)argc)audio_wav=argv[++i];
         else if(!strcmp(argv[i],"--audio-ticks-hz")&&i+1<(unsigned)argc) {
             char *end;unsigned long hz=strtoul(argv[++i],&end,0);
@@ -117,13 +134,15 @@ int main(int argc, char **argv)
     if(java_menu&&import_path){fprintf(stderr,"Use --java-menu or --import, not both.\n");result=1;goto done;}
     if(java_menu&&!content_java_menu(&content,&m)){fprintf(stderr,"%s\n",content.error);result=1;goto done;}
     if(java_menu&&!budget_set)budget=600000000;
-    if(audio_wav&&!hardware_dll){fprintf(stderr,"--audio-wav requires --ma5-hw\n");result=1;goto done;}
-    if(hardware_dll) {
-        if(!ma3_enable(&m.ma3,hardware_dll,audio_wav,!audio_wav,m.clock.attached?1000000000:audio_ticks_hz)){fprintf(stderr,"MA-3 hardware: %s\n",m.ma3.error);result=1;goto done;}
-        m.ma3.trace=fopen("build/ma3-traffic.log","w");
-        if(!m.ma3.trace){result=1;goto done;}
-        if(m.clock.attached)puts("Direct Yamaha hardware: PLL/core-cycle emulated time, PCM 48000 Hz; no host sequencer");
-        else printf("Direct Yamaha hardware: %u instruction ticks/sec, PCM 48000 Hz; no host sequencer\n",audio_ticks_hz);
+    if (m.ma3.attached && !m.clock.attached) ma3_set_clock(&m.ma3, &m.cpu.cycles, audio_ticks_hz);
+    if (legacy_audio) {
+        fputs("--ma5-hw is deprecated; using native MA-3 audio.\n", stderr);
+        if (!audio_wav) speakers=1;
+    }
+    if (speakers || audio_wav) {
+        if (!open_audio(&m, speakers, audio_wav)) { result=1; goto done; }
+        if (m.clock.attached) puts("Native MA-3: PLL/core-cycle emulated time, stereo PCM 48000 Hz");
+        else printf("Native MA-3: %u instruction ticks/sec, stereo PCM 48000 Hz\n",audio_ticks_hz);
     }
     if (storage.active) printf("Persistent NVM: %s%s\n", storage.path, storage.provision ? " (first-boot guest provisioning)" : "");
     if (m.bringup) { continuation = 1; puts(m.periodic_time?
@@ -180,7 +199,8 @@ int main(int argc, char **argv)
             m.sds_uart.tx_log = uart_log;
             if(sim_override>=0)m.sim.present=sim_override;
             battery_set(&m.battery,battery_percent,charging);
-            if(hardware_dll&&!ma3_enable(&m.ma3,hardware_dll,audio_wav,!audio_wav,m.clock.attached?1000000000:audio_ticks_hz)){fprintf(stderr,"MA-3 hardware: %s\n",m.ma3.error);result=1;break;}
+            if (m.ma3.attached && !m.clock.attached) ma3_set_clock(&m.ma3, &m.cpu.cycles, audio_ticks_hz);
+            if ((speakers || audio_wav) && !open_audio(&m, speakers, audio_wav)) { result=1; break; }
             if (access_log) {
                 unsigned r;
                 m.bus.access_log = access_log;
@@ -218,14 +238,17 @@ int main(int argc, char **argv)
     if(m.sim.attached)printf("SIM: %s, resets=%llu APDUs=%llu RX=%llu TX=%llu DMA=%llu\n",m.sim.present?"synthetic card inserted":"removed",
         (unsigned long long)m.sim.resets,(unsigned long long)m.sim.card.commands,(unsigned long long)m.sim.received,
         (unsigned long long)m.sim.transmitted,(unsigned long long)m.sim.dma_bytes);
-    if(m.ma3.hw) {Ma5HwStats stats=ma5_hw_stats(m.ma3.hw);
+    if(m.ma3.output) {
+        Ma3Stats stats;
+        ma3_close_audio(&m.ma3);
+        stats=ma3_stats(&m.ma3);
         printf("MA-3: reads=%llu writes=%llu FIFO=%llu IRQ=%llu; PCM frames=%llu nonzero=%llu peak=%u host-underruns=%llu%s\n",
             (unsigned long long)m.ma3.reads,(unsigned long long)m.ma3.writes,(unsigned long long)m.ma3.fifo_bytes,
             (unsigned long long)m.ma3.irq_events,(unsigned long long)stats.frames,(unsigned long long)stats.nonzero,stats.peak,
             (unsigned long long)stats.underruns,stats.failed?" FAILED":"");
-        printf("MA-3 compatibility: RAM reads=%llu translated=%llu unsupported=%llu partial FIFO=%u\n",
-            (unsigned long long)m.ma3.ram_reads,(unsigned long long)m.ma3.translated,(unsigned long long)m.ma3.unsupported,m.ma3.delayed_length);
-        if(stats.failed)result=1;
+        printf("MA-3: RAM reads=%llu commands=%llu unsupported=%llu FIFO queued=%u\n",
+            (unsigned long long)m.ma3.ram_reads,(unsigned long long)m.ma3.commands,(unsigned long long)m.ma3.unsupported,m.ma3.fifo_count);
+        if(stats.failed){fprintf(stderr,"%s\n",m.ma3.output_error);result=1;}
     }
     for (i = 0; i < m.flash_count; ++i) printf("Flash %08x: programs=%llu erases=%llu last_program=%08x last_erase=%08x\n",
         m.flashes[i].base, (unsigned long long)m.flashes[i].programs, (unsigned long long)m.flashes[i].erases,

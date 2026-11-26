@@ -23,9 +23,9 @@ bookkeeping is preserved, not just its eventual interrupt.
 Native firmware entry points come from the live model bindings. A small Bloom
 filter permits false positives (an unnecessary reference step), never a missed
 configured entry. SIM/DMA, low-power timers, charger completion, MA sample/Water
-deadlines and independent CPU-tone output all contribute bounds. Yamaha worker
-commands are synchronous: between completed commands/generation calls no DLL
-sequencer work runs; MMIO and sample boundaries therefore retain IRQ/LED polling.
+deadlines and independent CPU-tone output all contribute bounds. The native
+MA-3 core contributes its next sequencer, timer, FIFO or PCM output deadline.
+Port accesses also advance the chip through the current guest time.
 
 Guest provisioning, content imports, legacy battery injection, unknown timed
 audio backends, and access-watch logging retain the conservative step path.
@@ -49,8 +49,8 @@ reads can be fast, but flash commands/programming never become RAM stores.
 - The complete Release CPU/differential/peripheral/network/audio/import suite.
 - Native charging runs on XEDA2/XEDD1/XEDK1 reach the hatched chick at 100%; a
   25% control remains in charging mode, with the preceding LCD-write counts.
-- Native XEDK1 WAP fetch, session exit/Resume and distinct second URL, with
-  Yamaha enabled, complete without CPU/DLL failure.
+- Native XEDK1 WAP fetch, session exit/Resume and distinct second URL completed
+  without CPU or audio failure with the former DLL-backed adapter enabled.
 - Single-step and batched startup/ringtone-selection runs produced identical
   9,899,564-byte PCM WAVs: 2,474,880 stereo frames, 3,209,620 nonzero samples,
   FIFO 114,529 bytes, final clock 51,565,774,059 ns. Inputs/captures stay private.

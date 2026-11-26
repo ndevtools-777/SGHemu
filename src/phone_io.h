@@ -1,13 +1,13 @@
 #ifndef SGH_PHONE_IO_H
 #define SGH_PHONE_IO_H
 #include "arm7.h"
-typedef struct PhoneOutput PhoneOutput;
+#include "audio_output.h"
 typedef struct {
     uint32_t tone_entry,tone_stop,tone_table,gpio_entry;
     unsigned led_pins[3],led;
     double phase[2],step[2],amplitude[2],render_amplitude[2];
     uint64_t led_tick,last_ns,fraction,frames,nonzero,tone_changes,led_changes;
-    PhoneOutput *output;
+    AudioOutput *output;
     int configured,mixed,hardware_led;
 } PhoneIo;
 /* Observe verified guest driver entries without replacing their execution. */
