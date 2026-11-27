@@ -85,16 +85,16 @@ else
 $(error PLATFORM must be linux or windows)
 endif
 
-# The MA-3 core and output path are shared by the CLI and both GUIs.
+# Common sources used by the CLI, both GUIs and the machine tests.
 CPU_SRC := src/arm7.c src/bus.c
 JAR_SRC := src/jar.c src/jar_inflate.c src/file.c
 NVRAM_SRC := src/nvram.c src/firmware.c src/sha256.c $(PORT_SRC)
 AUDIO_SRC := src/audio_output.c $(PCM_SRC)
 MA3_SRC := src/ma3.c src/ma3_synth.c $(AUDIO_SRC)
-MACHINE_SRC := $(addprefix src/,machine.c lp_timer.c cellular.c wap_gateway.c phone_io.c \
-               rtc.c battery.c dsp_mailbox.c gpio.c keypad.c sim.c sim_card.c sds_uart.c \
-               sds_dma.c irom.c flash.c lcd.c intc.c pmic.c file.c) \
-                 $(CPU_SRC) $(MA3_SRC) $(PORT_SRC) src/java_net.c src/phone_net.c $(WAP_HTTP_SRC)
+MACHINE_SRC := $(addprefix src/,machine.c gpt.c lp_timer.c pwm.c cellular.c wap_gateway.c phone_io.c \
+                  rtc.c battery.c dsp_mailbox.c gpio.c keypad.c sim.c sim_card.c sds_uart.c \
+                  sds_dma.c irom.c flash.c lcd.c intc.c pmic.c file.c) \
+               $(CPU_SRC) $(MA3_SRC) $(PORT_SRC) src/java_net.c src/phone_net.c $(WAP_HTTP_SRC)
 APP_SRC := $(MACHINE_SRC) $(NVRAM_SRC) $(JAR_SRC) src/content.c src/host.c src/userfs.c
 
 TEST_SRC_bus_data            := src/bus.c
@@ -117,7 +117,7 @@ TEST_SRC_nvram               := $(MACHINE_SRC) $(NVRAM_SRC)
 TEST_SRC_peripheral          := src/lcd.c src/flash.c src/intc.c src/pmic.c $(CPU_SRC) src/file.c
 TEST_SRC_peripheral_schedule := src/sim.c src/sim_card.c src/sds_dma.c src/sds_uart.c src/intc.c src/bus.c $(PORT_SRC)
 TEST_SRC_phone_io            := src/gpio.c src/phone_io.c $(AUDIO_SRC) $(CPU_SRC)
-TEST_SRC_rtc                 := src/rtc.c src/bus.c
+TEST_SRC_rtc                 := src/rtc.c src/intc.c src/bus.c
 TEST_SRC_sim                 := src/sim.c src/sim_card.c src/intc.c src/bus.c $(PORT_SRC)
 TEST_SRC_userfs              := src/userfs.c src/bus.c src/file.c
 TEST_SRC_wap                 := src/wap_gateway.c

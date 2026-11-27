@@ -8,6 +8,7 @@ WST/WDT lines, and both emit a GEN marker every 64th Hw_Generate call
 calls gives a time base, so we can see how many FIFO payload bytes the player
 queues per interval and where it lets the queue run dry.
 """
+
 import sys
 
 
@@ -22,12 +23,11 @@ def scan(path):
         if line.startswith("GEN "):
             if cur is not None:
                 intervals.append(cur)
-            cur = {"count": int(line[4:]), "wdt": wdt, "delayed": delayed,
-                   "calls": 0}
+            cur = {"count": int(line[4:]), "wdt": wdt, "delayed": delayed, "calls": 0}
             wdt = delayed = 0
         elif line.startswith("WST "):
             v = int(line[4:], 16)
-            in_delayed = (v & 0x3f) == 1
+            in_delayed = (v & 0x3F) == 1
         elif line.startswith("WDT "):
             wdt += 1
             if in_delayed:
@@ -52,9 +52,10 @@ def report(path):
         total_del += x["delayed"]
         if x["wdt"] == 0:
             idle.append((i, t))
-    print("   total WDT=%d delayed=%d -> %.0f bytes/s (delayed %.0f/s)"
-          % (total_wdt, total_del, total_wdt / t if t else 0,
-             total_del / t if t else 0))
+    print(
+        "   total WDT=%d delayed=%d -> %.0f bytes/s (delayed %.0f/s)"
+        % (total_wdt, total_del, total_wdt / t if t else 0, total_del / t if t else 0)
+    )
     print("   idle GEN intervals (no FIFO bytes): %d" % len(idle))
     for i, ts in idle[:40]:
         print("      #%d  t=%.2fs" % (i, ts))

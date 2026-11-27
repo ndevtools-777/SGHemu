@@ -8,6 +8,7 @@ only refills the streamed ring while the channel's stream state is 2/3, and it
 re-reads the live cursor on every refill, so a gap in these reads means the
 driver left the streaming state.
 """
+
 import sys
 
 

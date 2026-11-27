@@ -18,6 +18,7 @@
 #define SDS_DMA_MAX_CHANNELS 8
 #define SDS_DMA_CHANNEL_STRIDE 0x40u
 typedef struct SdsDma SdsDma;
+
 typedef struct {
     Bus *bus;
     SdsDma *owner;
@@ -28,10 +29,11 @@ typedef struct {
     uint32_t cur_src, cur_dst;
     uint64_t next_due, bytes;
 } SdsDmaChannel;
+
 struct SdsDma {
     Bus *bus;
-    SdsUart *serial;      /* port whose RX register paces a device->memory channel */
-    uint32_t serial_rx;   /* its data register address, 0 when no port is attached */
+    SdsUart *serial;    /* port whose RX register paces a device->memory channel */
+    uint32_t serial_rx; /* its data register address, 0 when no port is attached */
     SdsDmaChannel channel[SDS_DMA_MAX_CHANNELS];
     unsigned channels, registered;
     uint32_t start_delay, byte_time; /* programmable pacing, CPU cycles */
@@ -39,11 +41,12 @@ struct SdsDma {
     uint64_t next_event; /* earliest channel deadline; MMIO writes invalidate it */
     int attached;
 };
+
 /* The port is optional: a controller with no port still models the register
    block, it just cannot tell when a receive byte is waiting. start_delay/byte_time
    of 0 select the default pacing. */
 int sds_dma_attach(SdsDma *d, Bus *bus, SdsUart *serial, uint32_t base, unsigned channels,
-    uint32_t start_delay, uint32_t byte_time);
+                   uint32_t start_delay, uint32_t byte_time);
 /* Move at most one byte per enabled channel. Called once per instruction with
    the CPU cycle count, so a memory->device channel cannot outrun the driver's
    ring producer. */

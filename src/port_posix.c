@@ -109,8 +109,8 @@ int plat_same_file(const char *a, const char *b)
 {
     struct stat left, right;
 
-    return stat(a, &left) == 0 && stat(b, &right) == 0 &&
-           left.st_dev == right.st_dev && left.st_ino == right.st_ino;
+    return stat(a, &left) == 0 && stat(b, &right) == 0 && left.st_dev == right.st_dev &&
+           left.st_ino == right.st_ino;
 }
 
 int plat_mkdir(const char *path, int exist_ok)

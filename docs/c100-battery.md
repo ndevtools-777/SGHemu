@@ -15,7 +15,8 @@ the battery ADC voltage. With the cable connected and battery set to 100%, the
 charger asserts its done input after **20 emulated seconds** of active charging.
 This settling delay lets the firmware initialize its filtered measurements; it
 is a provisional model delay, not a measured C100 charging/taper duration.
-Reset with the charger connected to enter the firmware's charging-only screen.
+Connect the charger in Standby or shut down with the charger connected to enter
+the firmware's charging-only screen.
 Its own full-charge handler then stops charging and displays the hatched egg.
 
 XEDK1 `DetectFullCharge` (`011EBA98`) reads GPIO 34; `FullChargeState`
@@ -134,7 +135,26 @@ The model supplies a mutable register readback stub there; returning zero foreve
 would hang the firmware in its hardware-lock loop. Other charger hardware,
 current sensing and a full analog/RF/DSP model remain unimplemented.
 
-## Charger-connected reset animation
+## Shutdown with the cable connected
+
+XEDK1 records reset type `0x001e` and a reset count at RTC `000400B0/B2` when
+shutting down with a cable attached. `ASICReset` writes `0x0047` to ASIC Mode
+Control (`0004091E`), then `0x8000` to External Control (`00040B04`) and waits.
+The CX805 model treats External Control bit 15 as a software reset request.
+It restarts through the selected profile's boot entry while PMU `HOLD`, RTC,
+RAM, NOR/NVM and SIM contents remain available. The cable stays connected, so
+the guest brings up the charging screen and controls the LCD again. With the
+cable disconnected, firmware clears `HOLD` and the phone enters Standby.
+The reset bit and reset scope are inferred from firmware and emulator traces;
+they have not been measured on a handset.
+
+With an initialized XEDK1 snapshot, the optional read-only test
+`c100_charger_test MODEL.cfg SNAPSHOT.snv PERCENT OUTPUT_PREFIX --shutdown`
+boots with the cable disconnected, connects it, and exercises this transition.
+It checks that charging frames advance and that the native completion handler
+turns off charging at 100%.
+
+## Charging animation timing
 
 The frozen charging animation was a firmware scheduler wait, not a halted CPU
 or an LCD presentation problem. `OnWakeup` (`011506C4`) waited at `011506CE` for

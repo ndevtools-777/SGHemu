@@ -48,12 +48,45 @@ configured viewport, not a claim about the physical chip capacity.
 
 Primary authored references: Samsung [S6B33B0A v1.1](https://www.displayfuture.com/Display/datasheet/controller/S6B33B0A.pdf)
 and [S6B33B2 v1.2](https://www.displayfuture.com/Display/datasheet/controller/S6B33B2.pdf).
-The detailed Display On section requires standby to be cleared first. The
-model therefore does not treat `51` as a wake command. Status returns DP bit 0,
-REV bit 1, STB bit 2 and X/Y bit 6, without a busy delay. Analog/power parameters
-are consumed but not electrically simulated. Burst On, partial display,
-scrolling and other unused commands are not yet implemented; unknown commands
-are logged. Burst Off (`2E`) is acknowledged for the observed x16 path.
+The display resets off. The detailed Display On section requires standby to be
+cleared before `51` can enable output. Status returns DP bit 0,
+REV bit 1, STB bit 2 and X/Y bit 6, without a busy delay. Most analog/power
+parameters are consumed without simulating the circuit. Burst On, partial
+display and scrolling are not implemented. Burst Off (`2E`) is acknowledged
+for the observed x16 path; unknown commands are logged.
+
+## Backlight, contrast and PWM
+
+On [the C100 schematic][c100-lights], A7 (`LCD_BACKLIGHT_EN`) enables the
+LT1937 LED driver. C4 (`LCD_BACKLIGHT_CONTROL`) switches the additional current
+sense path through Q400/R403, making the backlight brighter. The lower current
+uses R402. A4 controls the keypad light separately. [FreeCoder's C100 LCD
+driver][freecoder-lcd] selects three states: A7 low = off, A7 high/C4 low =
+normal, A7 high/C4 high = bright. XEDK1 `uhBacklight` (`0x0113DF40`) writes
+those GPIOs too. The output latches only drive the lights in GPIO output mode.
+
+`lcd16SetContrast` (`0x0113A066`) sends `2A` followed by one byte. The value
+changes LCD drive voltage independently of the backlight driver. The renderer
+uses `A8` (FreeCoder's setup) as neutral contrast. `2B` is for partial display
+mode 1 and has no effect in normal mode. Contrast and light changes repaint
+the existing DDRAM in both GUIs and `--lcd-out` BMPs. The unlit panel remains
+faintly visible; display-off, standby and board power-off blank the image.
+The displayed brightness and contrast curves are approximations pending
+measurements of the handset panel.
+
+C4 mux value `01` selects the [CX805-30 annunciator PWM][cx805]. The two
+generators at `0x00040A00` and `0x00040A10` each have control, duty, divider,
+count and 32-bit pattern registers. The 1.95 MHz reference advances rotating
+pattern readback. SGHemu averages the two interleaved outputs to set the
+increased-current fraction of the backlight while A7 is high. This is a display
+approximation; LT1937 switching and panel luminance have not been measured.
+In the XEDK1 boot trace through 320M instructions, both writes to PWM control
+at `0x00040A00` were zero. Its lighting changes used GPIO.
+
+A7 mux value `01` selects the Timer 2 pulse output. SGHemu reports this selection
+and suppresses the GPIO latch; it leaves the panel unlit in that mode pending
+evidence for pulse width and polarity. Both frontends and the CLI report the
+selected light mode, contrast and keypad light state.
 
 ## Why the first attempt stayed black
 
@@ -99,3 +132,7 @@ key matrix scanning and dynamic charger/battery emulation remain unfinished.
   ADC/battery, calibrated timers and MA-3 audio still require work.
 
 Post-splash tracing and current NVM failure: [C100 startup after the splash](c100-post-splash.md).
+
+[c100-lights]: https://github.com/Krasutski/SamsungC100_firmware_handmade/blob/b87b59a/doc/sch/shem_led_keyb_LCD_spek_vibr.pdf
+[freecoder-lcd]: https://cx805.narod.ru/LCD.htm
+[cx805]: https://github.com/Krasutski/SamsungC100_firmware_handmade/blob/b87b59a/doc/datasheets/CX805-30.pdf

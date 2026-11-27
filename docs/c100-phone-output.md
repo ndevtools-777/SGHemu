@@ -59,6 +59,9 @@ gpio_led=0x0004028c,5,3,6
 ```
 
 The three numbers are physical R/G/B port bits, not firmware table addresses.
+The standalone C100 board also applies the pin mux and active-low output enables.
+It starts with the documented `F0xx` Port A data latch and tri-stated drivers;
+enabling the A6 output alone drives blue (RGB mask `4`).
 Unrelated port bits do not change LED event ordering. A repeated LED write still
 updates its event timestamp, so it can supersede an older MA melody event.
 The legacy seven-field `phone_io` config remains supported for private profiles;
@@ -79,6 +82,15 @@ A Bumer firmware run recorded 50 melody LED events.
 The GUI updates its small and large program icons to solid colors matching
 those three lines. Off is black. Eight reusable icon handles are released on
 exit; no decorative LED frame, separate panel or host blink timer is added.
+
+## Vibrator
+
+The C100 schematic connects the MA-3 `MTR` pin to `VIBRATOR_EN` at the motor
+regulator. An XEDK1 MMIO trace of `YMU762_EnableMotor` and `YMU762_DisableMotor`
+shows bank 0 register `0D` written as `01` and `00`, respectively. Both paths
+also write parameter `0147=1`. SGHemu tracks bit 0 of register `0D` as an on/off
+output and reports it in the same board status as the lights. This represents
+the motor enable line.
 
 ## LCD ghosting
 

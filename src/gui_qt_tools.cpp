@@ -48,13 +48,17 @@ void PhoneWindow::addToolMenus(QMenu *file, QMenu *emulation)
     });
 
     continuationAction_ = checkAction(emulation, "Diagnostic: continue &unknown accesses", false);
-    connect(continuationAction_, &QAction::triggered, this, [this](bool enabled) { continuation_ = enabled; });
+    connect(continuationAction_, &QAction::triggered, this,
+            [this](bool enabled) { continuation_ = enabled; });
     simAction_ = checkAction(emulation, "Virtual &SIM inserted (reset)", false);
     connect(simAction_, &QAction::triggered, this, [this](bool inserted) {
         const int previous = simOverride_;
         simOverride_ = inserted;
-        const State next = runTimer_.isActive() ? State::Running : State::Paused;
-        if (!loadFirmware(firmware_, next, storage_.defaults_boot != 0)) simOverride_ = previous;
+        const State next = machine_powered_off(&machine_) ? State::Standby
+                           : runTimer_.isActive()         ? State::Running
+                                                          : State::Paused;
+        if (!loadFirmware(firmware_, next, storage_.defaults_boot != 0))
+            simOverride_ = previous;
         updateUi();
     });
     priorityAction_ = checkAction(emulation, "High process priority", highPriority_);
@@ -91,23 +95,25 @@ void PhoneWindow::addToolMenus(QMenu *file, QMenu *emulation)
     auto *battery = emulation->addMenu("Battery");
     batteryLevel_ = battery->addAction("Set percentage...", this, [this] {
         bool accepted;
-        const int value = QInputDialog::getInt(this, "Battery", "Battery charge (0-100%):",
-                                               batteryPercent_, 0, 100, 1, &accepted);
-        if (!accepted) return;
+        const int value = QInputDialog::getInt(this, "Battery", "Battery charge (0-100%):", batteryPercent_,
+                                               0, 100, 1, &accepted);
+        if (!accepted)
+            return;
         batteryPercent_ = value;
-        battery_set(&machine_.battery, value, charging_);
+        machine_set_battery(&machine_, value, charging_);
         settings_.setValue("battery/percent", value);
     });
     batteryCable_ = checkAction(battery, "Charging cable connected", charging_);
     connect(batteryCable_, &QAction::triggered, this, [this](bool connected) {
         charging_ = connected;
-        battery_set(&machine_.battery, batteryPercent_, connected);
+        machine_set_battery(&machine_, batteryPercent_, connected);
         settings_.setValue("battery/charging", connected);
     });
 
     auto *cell = emulation->addMenu("Cellular");
     cellAction_ = checkAction(cell, "Cellular enabled", cellEnabled_);
-    connect(cellAction_, &QAction::triggered, this, [this](bool enabled) { applyCellular(enabled, networkName_); });
+    connect(cellAction_, &QAction::triggered, this,
+            [this](bool enabled) { applyCellular(enabled, networkName_); });
     smsAction_ = cell->addAction("Send SMS to phone...", this, &PhoneWindow::sendSms);
     callAction_ = cell->addAction("Call phone...", this, &PhoneWindow::callPhone);
     networkAction_ = cell->addAction("Network name...", this, &PhoneWindow::editNetwork);
@@ -125,11 +131,13 @@ void PhoneWindow::addToolMenus(QMenu *file, QMenu *emulation)
     connect(audioAction_, &QAction::triggered, this, [this](bool enabled) {
         const bool previous = audioEnabled_;
         audioEnabled_ = enabled;
-        if (machine_.loaded && !loadFirmware(firmware_, State::Stopped, storage_.defaults_boot != 0))
+        const State next = machine_powered_off(&machine_) ? State::Standby : State::Stopped;
+        if (machine_.loaded && !loadFirmware(firmware_, next, storage_.defaults_boot != 0))
             audioEnabled_ = previous;
         audioSettings_.setValue("audio/enabled", audioEnabled_);
         updateUi();
-        if (enabled && !audioError_.isEmpty()) QMessageBox::warning(this, "MA-3 audio", audioError_);
+        if (enabled && !audioError_.isEmpty())
+            QMessageBox::warning(this, "MA-3 audio", audioError_);
     });
 }
 
@@ -153,31 +161,37 @@ void PhoneWindow::setGsmMode(unsigned mode)
     machine_.cellular.mode = mode;
     phone_net_set_mode(&machine_.network, cellEnabled_ ? mode : 0);
     settings_.setValue("cellular/gsm_mode", mode);
-    if (mode == 2) QMessageBox::information(this, "Set up the built-in WAP gateway",
-        "In the phone's WAP browser profile settings, enter:\n\n"
-        "Gateway IP address: 10.0.0.1\nSecurity: Non-secure\nPort (if shown): 9201\n\n"
-        "On the C100, use # to enter dots in the IP address.\n\n"
-        "Test homepage: http://sghemu.local/\n\n"
-        "Make sure Cellular is enabled, then open the phone's WAP browser.");
+    if (mode == 2)
+        QMessageBox::information(
+            this, "Set up the built-in WAP gateway",
+            "In the phone's WAP browser profile settings, enter:\n\n"
+            "Gateway IP address: 10.0.0.1\nSecurity: Non-secure\nPort (if shown): 9201\n\n"
+            "On the C100, use # to enter dots in the IP address.\n\n"
+            "Test homepage: http://sghemu.local/\n\n"
+            "Make sure Cellular is enabled, then open the phone's WAP browser.");
 }
 
 void PhoneWindow::editNetwork()
 {
     bool accepted;
-    const QString name = QInputDialog::getText(this, "Network name", "Network name (1-30 ASCII characters):",
-                                               QLineEdit::Normal, networkName_, &accepted);
-    if (accepted) applyCellular(cellEnabled_, name);
+    const QString name = QInputDialog::getText(this, "Network name",
+                                               "Network name (1-30 ASCII characters):", QLineEdit::Normal,
+                                               networkName_, &accepted);
+    if (accepted)
+        applyCellular(cellEnabled_, name);
 }
 
 void PhoneWindow::callPhone()
 {
     bool accepted;
-    const QString number = QInputDialog::getText(this, "Call phone", "Caller number:",
-                                                QLineEdit::Normal, "+79990001122", &accepted);
-    if (!accepted) return;
+    const QString number = QInputDialog::getText(this, "Call phone", "Caller number:", QLineEdit::Normal,
+                                                 "+79990001122", &accepted);
+    if (!accepted)
+        return;
     if (cellular_call(&machine_.cellular, &machine_.bus, number.toUtf8().constData()))
         setState(State::Running);
-    else QMessageBox::warning(this, "Call phone", QString::fromUtf8(machine_.cellular.error));
+    else
+        QMessageBox::warning(this, "Call phone", QString::fromUtf8(machine_.cellular.error));
 }
 
 void PhoneWindow::sendSms()
@@ -188,7 +202,8 @@ void PhoneWindow::sendSms()
     QLineEdit number("+79990001122");
     QPlainTextEdit message;
     QComboBox level;
-    level.addItems({"Normal (no class)", "Class 0 - Flash", "Class 1 - Phone", "Class 2 - SIM", "Class 3 - Terminal"});
+    level.addItems(
+        {"Normal (no class)", "Class 0 - Flash", "Class 1 - Phone", "Class 2 - SIM", "Class 3 - Terminal"});
     form.addRow("Sender number:", &number);
     form.addRow("Message (up to 70 characters):", &message);
     form.addRow("SMS level:", &level);
@@ -200,11 +215,14 @@ void PhoneWindow::sendSms()
         const QString text = message.toPlainText();
         const QDateTime now = QDateTime::currentDateTime();
         const int offset = now.offsetFromUtc() / (15 * 60);
-        const int parts[] = {now.date().year() % 100, now.date().month(), now.date().day(),
-                             now.time().hour(), now.time().minute(), now.time().second(), qAbs(offset)};
+        const int parts[] = {
+            now.date().year() % 100, now.date().month(),  now.date().day(), now.time().hour(),
+            now.time().minute(),     now.time().second(), qAbs(offset)};
         uint8_t timestamp[7];
-        for (unsigned i = 0; i < 7; ++i) timestamp[i] = (parts[i] % 10) * 16 + parts[i] / 10;
-        if (offset < 0) timestamp[6] |= 8;
+        for (unsigned i = 0; i < 7; ++i)
+            timestamp[i] = (parts[i] % 10) * 16 + parts[i] / 10;
+        if (offset < 0)
+            timestamp[6] |= 8;
         if (text.isEmpty() || text.size() > 70) {
             QMessageBox::information(&dialog, "Send SMS", "Enter a message of 1 to 70 characters.");
             return;
@@ -223,10 +241,12 @@ void PhoneWindow::sendSms()
 void PhoneWindow::updateCall()
 {
     const Cellular &cell = machine_.cellular;
-    if (callRevision_ == cell.revision) return;
+    if (callRevision_ == cell.revision)
+        return;
     callRevision_ = cell.revision;
     if (!cell.outgoing || !cell.call_state) {
-        if (callDialog_) callDialog_->hide();
+        if (callDialog_)
+            callDialog_->hide();
         return;
     }
     if (!callDialog_) {
@@ -244,8 +264,9 @@ void PhoneWindow::updateCall()
         connect(callDialog_, &QDialog::rejected, this, [this] { answerCall(false); });
     }
     const bool connected = cell.call_state == CELL_CONNECTED;
-    callLabel_->setText(QString("%1\nDialed number: %2")
-        .arg(connected ? "Call connected" : "Incoming call from the emulated phone", cell.number));
+    callLabel_->setText(
+        QString("%1\nDialed number: %2")
+            .arg(connected ? "Call connected" : "Incoming call from the emulated phone", cell.number));
     acceptCall_->setText(connected ? "Hang up" : "Accept");
     declineCall_->setVisible(!connected);
     callDialog_->show();
@@ -258,7 +279,8 @@ void PhoneWindow::answerCall(bool accept)
         updateCall();
     } else {
         QMessageBox::warning(this, "Call", QString::fromUtf8(machine_.cellular.error));
-        if (machine_.cellular.call_state) callDialog_->show();
+        if (machine_.cellular.call_state)
+            callDialog_->show();
     }
 }
 
@@ -288,7 +310,8 @@ static QString hex(uint32_t value, int width = 8)
 
 void PhoneWindow::updateDiagnostics()
 {
-    if (!diagnostics_ || !diagnostics_->isVisible() || diagnosticsText_->textCursor().hasSelection()) return;
+    if (!diagnostics_ || !diagnostics_->isVisible() || diagnosticsText_->textCursor().hasSelection())
+        return;
     const Machine &m = machine_;
     QString text;
     QTextStream out(&text);
@@ -296,17 +319,28 @@ void PhoneWindow::updateDiagnostics()
         << "\nState: " << statusBar()->currentMessage() << '\n'
         << "Instructions: " << m.cpu.instructions << "   scheduler ticks: " << m.cpu.cycles << '\n'
         << "CPSR: " << hex(m.cpu.cpsr) << "   Unknown / ROM faults: " << m.bus.faults << '\n'
-        << "Last access: " << (m.bus.last_write ? 'W' : 'R') << m.bus.last_width * 8
-        << " at " << hex(m.bus.last_address) << ", value " << hex(m.bus.last_value)
-        << ", instruction PC " << hex(m.bus.pc) << '\n'
+        << "Last access: " << (m.bus.last_write ? 'W' : 'R') << m.bus.last_width * 8 << " at "
+        << hex(m.bus.last_address) << ", value " << hex(m.bus.last_value) << ", instruction PC "
+        << hex(m.bus.last_pc) << '\n'
         << "Keypad bits: " << hex(m.keys) << " (guest active-low matrix)\n"
         << "ROM images: " << m.rom_count;
-    if (m.rom_count > 1) out << " (second mapped at " << hex(m.roms[1].base) << ')';
-    out << "\nUnplaced image: " << (*m.unplaced_path ? QFile::decodeName(m.unplaced_path) : "none")
-        << " (" << m.unplaced_size << " bytes)\n"
-        << "LCD: " << (m.lcd.attached ? "attached" : "not mapped") << ", display " << (m.lcd.enabled ? "on" : "off")
-        << ", commands " << m.lcd.commands << ", pixel writes " << m.lcd.writes << '\n'
+    if (m.rom_count > 1)
+        out << " (second mapped at " << hex(m.roms[1].base) << ')';
+    out << "\nUnplaced image: " << (*m.unplaced_path ? QFile::decodeName(m.unplaced_path) : "none") << " ("
+        << m.unplaced_size << " bytes)\n"
+        << "LCD: " << (m.lcd.attached ? "attached" : "not mapped") << ", display "
+        << (m.lcd.enabled ? "on" : "off") << ", commands " << m.lcd.commands << ", pixel writes "
+        << m.lcd.writes << '\n'
         << "CPU error: " << (m.cpu.error ? m.cpu.error : "none") << "\n\n";
+    char status[256];
+    if (machine_cx805_status(&m, status, sizeof(status)) > 0)
+        out << status << '\n';
+    if (arm7_fault_status(&m.cpu, status, sizeof(status)) > 0)
+        out << status << '\n';
+    if (sds_uart_tx_status(&m.debug_uart, "DEBUG", status, sizeof(status)) > 0)
+        out << status << '\n';
+    if (sds_uart_tx_status(&m.sds_uart, "SDS", status, sizeof(status)) > 0)
+        out << status << '\n';
     for (unsigned i = 0; i < 16; ++i)
         out << 'R' << i << " = " << hex(m.cpu.r[i]) << (i % 4 == 3 ? "\n" : "    ");
     for (unsigned i = 0; i < m.flash_count; ++i) {
@@ -315,22 +349,31 @@ void PhoneWindow::updateDiagnostics()
             << " erases; last " << hex(flash.last_program) << " / " << hex(flash.last_erase) << '\n';
     }
     if (m.clock.attached)
-        out << "PLL: ARM " << m.clock.arm_hz << " Hz / DSP " << m.clock.dsp_hz
-            << " Hz; core cycles " << m.cpu.clock_cycles << "; time " << m.clock.nanoseconds / 1e9 << " s"
+        out << "PLL: ARM " << m.clock.arm_hz << " Hz / DSP " << m.clock.dsp_hz << " Hz; core cycles "
+            << m.cpu.clock_cycles << "; time " << m.clock.nanoseconds / 1e9 << " s"
             << (m.clock.unknown ? " (unrecognized divider)" : "") << '\n';
-    out << "\nMA-3 audio: " << (audio_output_live(m.ma3.output) ? "native PCM" : "muted")
-        << "; FIFO bytes " << m.ma3.fifo_bytes << ", IRQs " << m.ma3.irq_events
-        << ", FIFO clears " << m.ma3.fifo_clears << ", partial packets dropped " << m.ma3.partial_drops << '\n';
-    if (*m.ma3.output_error) out << "Audio error: " << m.ma3.output_error << '\n';
-    else if (!audioError_.isEmpty()) out << "Audio error: " << audioError_ << '\n';
-    if (*m.ma3.error) out << "MA-3 error: " << m.ma3.error << '\n';
+    if (m.rtc.attached || m.lp_timer.attached)
+        out << "CPU: " << (machine_sleeping(&m) ? "sleeping" : "awake") << "; RTC alarms=" << m.rtc.alarm_events
+            << "; sleep timer wakeups=" << m.lp_timer.wake_events << '\n';
+    out << "\nMA-3 audio: " << (audio_output_live(m.ma3.output) ? "native PCM" : "muted") << "; FIFO bytes "
+        << m.ma3.fifo_bytes << ", IRQs " << m.ma3.irq_events << ", FIFO clears " << m.ma3.fifo_clears
+        << ", partial packets dropped " << m.ma3.partial_drops << '\n';
+    if (*m.ma3.output_error)
+        out << "Audio error: " << m.ma3.output_error << '\n';
+    else if (!audioError_.isEmpty())
+        out << "Audio error: " << audioError_ << '\n';
+    if (*m.ma3.error)
+        out << "MA-3 error: " << m.ma3.error << '\n';
     if (m.ma3.output) {
         const Ma3Stats stats = ma3_stats(&m.ma3);
-        out << "PCM frames " << stats.frames << ", nonzero samples " << stats.nonzero
-            << ", peak " << stats.peak << ", host underruns " << stats.underruns << '\n';
+        out << "PCM frames " << stats.frames << ", nonzero samples " << stats.nonzero << ", peak "
+            << stats.peak << ", host underruns " << stats.underruns << '\n';
     }
     out << "CPU tones: " << m.phone_io.frames << " PCM frames, " << m.phone_io.tone_changes << " changes\n"
-        << "\nSIM: " << (!m.sim.attached ? "not mapped" : m.sim.present ? "synthetic card inserted" : "removed")
+        << "\nSIM: "
+        << (!m.sim.attached ? "not mapped"
+            : m.sim.present ? "synthetic card inserted"
+                            : "removed")
         << "; resets " << m.sim.resets << ", APDUs " << m.sim.card.commands << ", RX " << m.sim.received
         << ", TX " << m.sim.transmitted << ", DMA bytes " << m.sim.dma_bytes << '\n';
     if (m.cellular.ready) {
@@ -338,17 +381,20 @@ void PhoneWindow::updateDiagnostics()
             << "; call state " << m.cellular.call_state << "; SMS received " << m.cellular.received_sms
             << " / sent " << m.cellular.sent_sms << "; last recipient " << m.cellular.last_sms_number << '\n';
         out << "Packet data: mode " << m.network.mode << "; UDP TX " << m.network.transmitted << " / RX "
-            << m.network.received << "; " << (*m.network.error ? m.network.error : "no transport error") << '\n';
+            << m.network.received << "; " << (*m.network.error ? m.network.error : "no transport error")
+            << '\n';
     }
     if (m.network.java.first)
         out << "Java TCP: DNS " << m.network.java.lookups << "; connects " << m.network.java.connects
             << "; TX " << m.network.java.sent << " / RX " << m.network.java.received << " bytes; "
             << (*m.network.java.error ? m.network.java.error : "no DNS error") << '\n';
     out << "\nFile > Logging writes build/gui-unmapped.log, gui-ma3-traffic.log and gui-profile.log.\n"
+        << "It captures mapped UARTs in build/gui-debug-uart.bin and build/gui-sds-uart.bin.\n"
         << "Diagnostic continuation returns zero on unknown reads and drops writes.\n"
         << "Clock-enabled profiles use core-cycle time; external bus waits remain uncalibrated.";
     out.flush();
-    if (text == diagnosticsText_->toPlainText()) return;
+    if (text == diagnosticsText_->toPlainText())
+        return;
     auto *scroll = diagnosticsText_->verticalScrollBar();
     const int top = scroll->value();
     diagnosticsText_->setPlainText(text);
@@ -357,28 +403,43 @@ void PhoneWindow::updateDiagnostics()
 
 bool PhoneWindow::applyLogging(bool enabled)
 {
-    FILE *bus = nullptr, *traffic = nullptr, *profile = nullptr;
+    FILE *bus = nullptr, *traffic = nullptr, *profile = nullptr, *debug = nullptr, *sds = nullptr;
     if (enabled) {
         QDir().mkpath("build");
         bus = fopen("build/gui-unmapped.log", "a");
         traffic = fopen("build/gui-ma3-traffic.log", "a");
         profile = fopen("build/gui-profile.log", "a");
-        if (!bus || !traffic || !profile) {
-            if (bus) fclose(bus);
-            if (traffic) fclose(traffic);
-            if (profile) fclose(profile);
+        if (machine_.debug_uart.attached)
+            debug = fopen("build/gui-debug-uart.bin", "ab");
+        if (machine_.sds_uart.attached)
+            sds = fopen("build/gui-sds-uart.bin", "ab");
+        if (!bus || !traffic || !profile || (machine_.debug_uart.attached && !debug) ||
+            (machine_.sds_uart.attached && !sds)) {
+            for (FILE *log : {bus, traffic, profile, debug, sds})
+                if (log)
+                    fclose(log);
             loggingAction_->setChecked(busLog_ != nullptr);
             return false;
         }
         fputs("# GUI logging enabled\n", bus);
         fputs("# GUI logging enabled\n", traffic);
-        fprintf(profile, "# SGHemu Qt profile: model=%s, PC sampled once per execution batch\n", machine_.name);
+        fprintf(profile, "# SGHemu Qt profile: model=%s, PC sampled once per execution batch\n",
+                machine_.name);
     }
-    if (busLog_) fclose(busLog_);
-    if (machine_.ma3.trace) fclose(machine_.ma3.trace);
-    if (profileLog_) fclose(profileLog_);
+    if (busLog_)
+        fclose(busLog_);
+    if (machine_.ma3.trace)
+        fclose(machine_.ma3.trace);
+    if (profileLog_)
+        fclose(profileLog_);
+    if (machine_.debug_uart.tx_log)
+        fclose(machine_.debug_uart.tx_log);
+    if (machine_.sds_uart.tx_log)
+        fclose(machine_.sds_uart.tx_log);
     machine_.bus.log = machine_.network.trace = busLog_ = bus;
     machine_.ma3.trace = traffic;
+    machine_.debug_uart.tx_log = debug;
+    machine_.sds_uart.tx_log = sds;
     profileLog_ = profile;
     profileWall_ = wallClock_.elapsed();
     profileInstructions_ = machine_.cpu.instructions;
@@ -390,21 +451,26 @@ bool PhoneWindow::applyLogging(bool enabled)
 
 void PhoneWindow::logProgress()
 {
-    if (!profileLog_) return;
+    if (!profileLog_)
+        return;
     const qint64 now = wallClock_.elapsed();
-    if (now - profileWall_ < 1000) return;
+    if (now - profileWall_ < 1000)
+        return;
     const double elapsed = (now - profileWall_) / 1000.0;
     const uint64_t instructions = machine_.cpu.instructions - profileInstructions_;
     const double guest = (machine_.clock.nanoseconds - profileGuest_) / 1e9;
-    fprintf(profileLog_, "wall_s=%.3f running=%d instructions=%llu mips=%.3f emu_s=%.3f speed_pct=%.1f tx=%llu rx=%llu\n",
-            elapsed, runTimer_.isActive(), static_cast<unsigned long long>(instructions), instructions / elapsed / 1e6,
-            guest, guest * 100.0 / elapsed, static_cast<unsigned long long>(machine_.network.transmitted),
+    fprintf(profileLog_,
+            "wall_s=%.3f running=%d instructions=%llu mips=%.3f emu_s=%.3f speed_pct=%.1f tx=%llu rx=%llu\n",
+            elapsed, runTimer_.isActive(), static_cast<unsigned long long>(instructions),
+            instructions / elapsed / 1e6, guest, guest * 100.0 / elapsed,
+            static_cast<unsigned long long>(machine_.network.transmitted),
             static_cast<unsigned long long>(machine_.network.received));
     fputs("guest_pc_samples", profileLog_);
     for (int i = 0; i < 8 && !profilePcs_.isEmpty(); ++i) {
         auto best = profilePcs_.begin();
         for (auto it = best; it != profilePcs_.end(); ++it)
-            if (it.value() > best.value()) best = it;
+            if (it.value() > best.value())
+                best = it;
         fprintf(profileLog_, " %08x:%u", best.key(), best.value());
         profilePcs_.erase(best);
     }
@@ -416,16 +482,22 @@ void PhoneWindow::logProgress()
     fflush(profileLog_);
     fflush(busLog_);
     fflush(machine_.ma3.trace);
+    if (machine_.debug_uart.tx_log)
+        fflush(machine_.debug_uart.tx_log);
+    if (machine_.sds_uart.tx_log)
+        fflush(machine_.sds_uart.tx_log);
 }
 
 void PhoneWindow::logStop(const char *reason)
 {
-    if (!busLog_) return;
+    if (!busLog_)
+        return;
     const Arm7 &cpu = machine_.cpu;
     for (FILE *log : {busLog_, profileLog_}) {
-        fprintf(log, "# STOP pc=%08x last_pc=%08x opcode=%08x cpsr=%08x reason=%s\n",
-                cpu.r[15], cpu.last_pc, cpu.last_opcode, cpu.cpsr, reason);
-        for (unsigned i = 0; i < 16; ++i) fprintf(log, "r%u=%08x%s", i, cpu.r[i], i % 4 == 3 ? "\n" : " ");
+        fprintf(log, "# STOP pc=%08x last_pc=%08x opcode=%08x cpsr=%08x reason=%s\n", cpu.r[15], cpu.last_pc,
+                cpu.last_opcode, cpu.cpsr, reason);
+        for (unsigned i = 0; i < 16; ++i)
+            fprintf(log, "r%u=%08x%s", i, cpu.r[i], i % 4 == 3 ? "\n" : " ");
         fflush(log);
     }
 }

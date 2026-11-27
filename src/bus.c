@@ -1,16 +1,20 @@
 #include "bus.h"
 #include <stdlib.h>
 #include <string.h>
+
 static Region *find(Bus *b, uint32_t a, unsigned width)
 {
     unsigned i;
-    if (width != 1 && width != 2 && width != 4) return NULL;
+    if (width != 1 && width != 2 && width != 4)
+        return NULL;
     for (i = 0; i < b->count; ++i) {
         Region *r = &b->regions[i];
-        if (a >= r->base && (uint64_t)a + width <= (uint64_t)r->base + r->size) return r;
+        if (a >= r->base && (uint64_t)a + width <= (uint64_t)r->base + r->size)
+            return r;
     }
     return NULL;
 }
+
 static void build_pages(Bus *b)
 {
     unsigned i;
@@ -21,147 +25,259 @@ static void build_pages(Bus *b)
         uint64_t first = ((uint64_t)r->base + ((1u << BUS_PAGE_SHIFT) - 1)) >> BUS_PAGE_SHIFT;
         uint64_t end = ((uint64_t)r->base + r->size) >> BUS_PAGE_SHIFT;
         /* Regions never overlap, so a page wholly inside one is exclusively its. */
-        for (p = (uint32_t)first; p < end; ++p) b->page[p] = (uint8_t)(i + 1);
+        for (p = (uint32_t)first; p < end; ++p)
+            b->page[p] = (uint8_t)(i + 1);
     }
     b->pages_ready = 1;
 }
+
 /* Same result as find(), but O(1) for the large ROM/RAM regions that dominate
    instruction fetch and data access. Small devices fall through to find(). */
 static Region *lookup(Bus *b, uint32_t a, unsigned width)
 {
     unsigned index;
-    if (width > 4 || !((0x16u >> width) & 1u)) return NULL;
-    if (!b->pages_ready) build_pages(b);
+    if (width > 4 || !((0x16u >> width) & 1u))
+        return NULL;
+    if (!b->pages_ready)
+        build_pages(b);
     index = b->page[a >> BUS_PAGE_SHIFT];
     if (index) {
         Region *r = &b->regions[index - 1];
-        if ((uint64_t)a + width <= (uint64_t)r->base + r->size) return r;
+        if ((uint64_t)a + width <= (uint64_t)r->base + r->size)
+            return r;
     }
     return find(b, a, width);
 }
+
 static int add(Bus *b, uint32_t base, uint32_t size)
 {
     unsigned i;
     b->pages_ready = 0;
     ++b->map_generation;
-    if (!size || (uint64_t)base + size > UINT64_C(0x100000000) || b->count == BUS_MAX_REGIONS) return 0;
+    if (!size || (uint64_t)base + size > UINT64_C(0x100000000) || b->count == BUS_MAX_REGIONS)
+        return 0;
     for (i = 0; i < b->count; ++i) {
         Region *r = &b->regions[i];
-        if ((uint64_t)base < (uint64_t)r->base + r->size && (uint64_t)r->base < (uint64_t)base + size) return 0;
+        if ((uint64_t)base < (uint64_t)r->base + r->size && (uint64_t)r->base < (uint64_t)base + size)
+            return 0;
     }
     memset(&b->regions[b->count], 0, sizeof(Region));
-    b->regions[b->count].base = base; b->regions[b->count].size = size;
-    ++b->count; return 1;
+    b->regions[b->count].base = base;
+    b->regions[b->count].size = size;
+    ++b->count;
+    return 1;
 }
+
 int bus_map(Bus *b, uint32_t base, uint32_t size, uint8_t *data, int readonly, int owned)
 {
     Region *r;
-    if (!data || !add(b, base, size)) return 0;
-    r = &b->regions[b->count - 1]; r->data = data; r->readonly = readonly; r->owned = owned;
+    if (!data || !add(b, base, size))
+        return 0;
+    r = &b->regions[b->count - 1];
+    r->data = data;
+    r->readonly = readonly;
+    r->owned = owned;
     return 1;
 }
+
 int bus_device(Bus *b, uint32_t base, uint32_t size, PeripheralRead read, PeripheralWrite write, void *ctx)
 {
     Region *r;
-    if (!read || !write || !add(b, base, size)) return 0;
-    r = &b->regions[b->count - 1]; r->read = read; r->write = write; r->context = ctx; return 1;
+    if (!read || !write || !add(b, base, size))
+        return 0;
+    r = &b->regions[b->count - 1];
+    r->read = read;
+    r->write = write;
+    r->context = ctx;
+    return 1;
 }
-static void fault(Bus *b, char op, uint32_t a, unsigned width, uint32_t v, const char *why)
+
+int bus_map_abort(Bus *b, uint32_t base, uint32_t size)
 {
-    b->fault = 1; ++b->faults;
-    b->last_address = a; b->last_value = v; b->last_width = width; b->last_write = op == 'W';
-    if (b->log) fprintf(b->log, "%llu PC=%08x %c%u %08x value=%08x %s\n",
-        (unsigned long long)b->ticks, b->pc, op, width * 8, a, v, why);
+    if (!add(b, base, size))
+        return 0;
+    b->regions[b->count - 1].aborts = 1;
+    return 1;
 }
+
+static void access_failure(Bus *b, int kind, char op, uint32_t address, unsigned width, uint32_t value,
+                           const char *reason)
+{
+    if (kind == BUS_UNSUPPORTED)
+        ++b->faults;
+    /* An unsupported access anywhere in the instruction still needs a diagnostic. */
+    if (b->fault != BUS_UNSUPPORTED || kind == BUS_UNSUPPORTED) {
+        b->fault = kind;
+        b->last_address = address;
+        b->last_value = value;
+        b->last_pc = b->pc;
+        b->last_width = width;
+        b->last_write = op == 'W';
+    }
+    if (b->log)
+        fprintf(b->log, "%llu PC=%08x %c%u %08x value=%08x %s\n", (unsigned long long)b->ticks, b->pc, op,
+                width * 8, address, value, reason);
+}
+
 void bus_fault_access(Bus *b, int write, uint32_t address, unsigned width, uint32_t value, const char *reason)
 {
-    fault(b, write ? 'W' : 'R', address, width, value, reason);
+    access_failure(b, BUS_UNSUPPORTED, write ? 'W' : 'R', address, width, value, reason);
 }
+
 unsigned bus_watch_parse(Bus *b, const char *spec)
 {
     unsigned count = 0;
-    if (!spec) return 0;
+    if (!spec)
+        return 0;
     while (*spec && count < BUS_MAX_WATCH) {
         char *stop;
         unsigned long lo = strtoul(spec, &stop, 0);
         unsigned long hi;
-        if (stop == spec || *stop != ',') break;
+        if (stop == spec || *stop != ',')
+            break;
         spec = stop + 1;
         hi = strtoul(spec, &stop, 0);
-        if (stop == spec) break;
+        if (stop == spec)
+            break;
         spec = stop;
-        if (hi > lo) { b->watch_lo[count] = (uint32_t)lo; b->watch_hi[count] = (uint32_t)hi; ++count; }
-        while (*spec == ';' || *spec == ',' || *spec == ' ' || *spec == '\t') ++spec;
+        if (hi > lo) {
+            b->watch_lo[count] = (uint32_t)lo;
+            b->watch_hi[count] = (uint32_t)hi;
+            ++count;
+        }
+        while (*spec == ';' || *spec == ',' || *spec == ' ' || *spec == '\t')
+            ++spec;
     }
     b->watch_count = count;
     b->watch_start = count ? b->watch_lo[0] : 0; /* Legacy callers still read these two. */
     b->watch_end = count ? b->watch_hi[0] : 0;
     return count;
 }
+
 static int watch_hit(const Bus *b, uint32_t address)
 {
     unsigned i;
-    if (address >= b->watch_start && address < b->watch_end) return 1;
+    if (address >= b->watch_start && address < b->watch_end)
+        return 1;
     for (i = 0; i < b->watch_count; ++i)
-        if (address >= b->watch_lo[i] && address < b->watch_hi[i]) return 1;
+        if (address >= b->watch_lo[i] && address < b->watch_hi[i])
+            return 1;
     return 0;
 }
+
 static void watch(Bus *b, char op, uint32_t address, unsigned width, uint32_t value, const Region *r)
 {
-    if (b->watch_writes_only && op == 'R') return;
-    if (!b->access_log || !watch_hit(b, address)) return;
-    fprintf(b->access_log, "%llu PC=%08x %c%u %08x value=%08x %s\n",
-        (unsigned long long)b->ticks, b->pc, op, width * 8, address, value,
-        !r ? "unmapped" : r->read ? "device" : r->readonly ? "ROM" : "RAM");
+    if (b->watch_writes_only && op == 'R')
+        return;
+    if (!b->access_log || !watch_hit(b, address))
+        return;
+    fprintf(b->access_log, "%llu PC=%08x %c%u %08x value=%08x %s\n", (unsigned long long)b->ticks, b->pc, op,
+            width * 8, address, value,
+            !r            ? "unmapped"
+            : r->aborts   ? "abort"
+            : r->read     ? "device"
+            : r->readonly ? "ROM"
+                          : "RAM");
 }
+
 uint32_t bus_read(Bus *b, uint32_t a, unsigned width)
 {
     Region *r = lookup(b, a, width);
     uint32_t value = 0;
-    if (!r) fault(b, 'R', a, width, 0, "unmapped");
-    else if (r->read && !r->fast) {++b->device_epoch;value = r->read(r->context, a - r->base, width);}
-    else {
+    if (r)
+        bus_wait_x16(b, r->read16_cycles, width);
+    if (!r)
+        bus_fault_access(b, 0, a, width, 0, "unmapped");
+    else if (r->aborts)
+        access_failure(b, BUS_ABORT, 'R', a, width, 0, "external abort");
+    else if (r->read && !r->fast) {
+        ++b->device_epoch;
+        value = r->read(r->context, a - r->base, width);
+    } else {
         const uint8_t *p = r->data + (a - r->base); /* little-endian host (x86) */
-        if (width == 4) memcpy(&value, p, 4);
-        else if (width == 2) { uint16_t half; memcpy(&half, p, 2); value = half; }
-        else value = p[0];
+        if (width == 4)
+            memcpy(&value, p, 4);
+        else if (width == 2) {
+            uint16_t half;
+            memcpy(&half, p, 2);
+            value = half;
+        } else
+            value = p[0];
     }
-    if (b->access_log) watch(b, 'R', a, width, value, r);
+    if (b->access_log)
+        watch(b, 'R', a, width, value, r);
     return value;
 }
-Region *bus_fetch_region(Bus *b,uint32_t a,unsigned width,BusFetchHint *hint)
+
+Region *bus_fetch_region(Bus *b, uint32_t a, unsigned width, BusFetchHint *hint)
 {
-    hint->region=lookup(b,a,width);hint->generation=b->map_generation;hint->owner=b;return hint->region;
+    hint->region = lookup(b, a, width);
+    hint->generation = b->map_generation;
+    hint->owner = b;
+    return hint->region;
 }
+
 int bus_peek(Bus *b, uint32_t a, unsigned width, uint32_t *value)
 {
     Region *r = lookup(b, a, width);
-    if (!r || r->read || !r->data) return 0; /* plain memory only, never a device */
+    if (!r || r->read || !r->data || r->aborts)
+        return 0; /* plain memory only, never a device */
     {
         const uint8_t *p = r->data + (a - r->base); /* little-endian host (x86) */
-        if (width == 4) memcpy(value, p, 4);
-        else if (width == 2) { uint16_t half; memcpy(&half, p, 2); *value = half; }
-        else *value = p[0];
+        if (width == 4)
+            memcpy(value, p, 4);
+        else if (width == 2) {
+            uint16_t half;
+            memcpy(&half, p, 2);
+            *value = half;
+        } else
+            *value = p[0];
     }
     return 1;
 }
+
 void bus_write(Bus *b, uint32_t a, unsigned width, uint32_t value)
 {
     Region *r = lookup(b, a, width);
-    if (b->access_log) watch(b, 'W', a, width, value, r);
-    if (!r) { fault(b, 'W', a, width, value, "unmapped"); return; }
-    if (r->write) { ++b->device_epoch;r->write(r->context, a - r->base, width, value); return; }
-    if (r->readonly) { fault(b, 'W', a, width, value, "ROM write"); return; }
+    if (b->access_log)
+        watch(b, 'W', a, width, value, r);
+    if (!r) {
+        bus_fault_access(b, 1, a, width, value, "unmapped");
+        return;
+    }
+    bus_wait_x16(b, r->write16_cycles, width);
+    if (r->aborts) {
+        access_failure(b, BUS_ABORT, 'W', a, width, value, "external abort");
+        return;
+    }
+    if (r->write) {
+        ++b->device_epoch;
+        r->write(r->context, a - r->base, width, value);
+        return;
+    }
+    if (r->readonly) {
+        bus_fault_access(b, 1, a, width, value, "ROM write");
+        return;
+    }
     {
         uint8_t *p = r->data + (a - r->base);
-        if (width == 4) memcpy(p, &value, 4);
-        else if (width == 2) { uint16_t half = (uint16_t)value; memcpy(p, &half, 2); }
-        else p[0] = (uint8_t)value;
+        if (width == 4)
+            memcpy(p, &value, 4);
+        else if (width == 2) {
+            uint16_t half = (uint16_t)value;
+            memcpy(p, &half, 2);
+        } else
+            p[0] = (uint8_t)value;
     }
 }
+
 void bus_destroy(Bus *b)
 {
     unsigned i;
-    for (i = 0; i < b->count; ++i) if (b->regions[i].owned) free(b->regions[i].data);
-    b->count = 0; b->pages_ready = 0;++b->map_generation;
+    for (i = 0; i < b->count; ++i)
+        if (b->regions[i].owned)
+            free(b->regions[i].data);
+    b->count = 0;
+    b->pages_ready = 0;
+    ++b->map_generation;
 }

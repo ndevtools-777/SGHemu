@@ -8,6 +8,7 @@ the data bytes that follow belong to it. Grouping by the status value (the low
 six bits select the command) shows which payloads each side repeats, so the
 MA-3 firmware's periodic stream packets can be matched against SM5W's player.
 """
+
 import sys
 from collections import Counter
 
@@ -35,8 +36,9 @@ def main():
     print("== %s status=%d : %d packets" % (path, want, len(pk)))
     sizes = Counter(len(p["data"]) for p in pk)
     print("   payload sizes: %s" % dict(sorted(sizes.items())))
-    shapes = Counter(" ".join("%02x" % b for b in p["data"][:8]) +
-                     (" ..." if len(p["data"]) > 8 else "") for p in pk)
+    shapes = Counter(
+        " ".join("%02x" % b for b in p["data"][:8]) + (" ..." if len(p["data"]) > 8 else "") for p in pk
+    )
     print("   most common shapes:")
     for shape, n in shapes.most_common(18):
         print("      %5d x  %s" % (n, shape))

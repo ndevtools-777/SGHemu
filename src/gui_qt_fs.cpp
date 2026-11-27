@@ -25,40 +25,48 @@ extern "C" {
 #include <functional>
 
 class FilesystemDialog final : public QDialog {
-public:
+  public:
     using AddFiles = std::function<void(const QStringList &)>;
+
     FilesystemDialog(QWidget *parent, AddFiles addFiles) : QDialog(parent), addFiles_(addFiles)
     {
         setAcceptDrops(true);
     }
 
-protected:
+  protected:
     void dragEnterEvent(QDragEnterEvent *event) override
     {
-        if (event->mimeData()->hasUrls()) event->acceptProposedAction();
+        if (event->mimeData()->hasUrls())
+            event->acceptProposedAction();
     }
 
     void dropEvent(QDropEvent *event) override
     {
         QStringList paths;
         for (const QUrl &url : event->mimeData()->urls())
-            if (url.isLocalFile()) paths << url.toLocalFile();
-        if (paths.isEmpty()) return;
+            if (url.isLocalFile())
+                paths << url.toLocalFile();
+        if (paths.isEmpty())
+            return;
         addFiles_(paths);
         event->acceptProposedAction();
     }
 
-private:
+  private:
     AddFiles addFiles_;
 };
 
 static const char *contentKind(unsigned type)
 {
     switch (type) {
-    case 6: return "Sound";
-    case 7: return "Picture";
-    case 10: return "Java";
-    default: return "System";
+    case 6:
+        return "Sound";
+    case 7:
+        return "Picture";
+    case 10:
+        return "Java";
+    default:
+        return "System";
     }
 }
 
@@ -86,7 +94,8 @@ static int decodePicture(ContentImport *im)
     }
     QImage image = reader.read().convertToFormat(QImage::Format_RGB888);
     if (image.isNull()) {
-        snprintf(im->error, sizeof(im->error), "Cannot decode picture: %.130s", reader.errorString().toUtf8().constData());
+        snprintf(im->error, sizeof(im->error), "Cannot decode picture: %.130s",
+                 reader.errorString().toUtf8().constData());
         im->failed = 1;
         return 0;
     }
@@ -131,7 +140,8 @@ void PhoneWindow::showFilesystem()
         removeFiles_ = new QPushButton("Remove", left);
         startQueue_ = new QPushButton("Import queue >>", left);
         stopQueue_ = new QPushButton("Stop", left);
-        for (auto *button : {addFiles, removeFiles_, startQueue_, stopQueue_}) queueButtons->addWidget(button);
+        for (auto *button : {addFiles, removeFiles_, startQueue_, stopQueue_})
+            queueButtons->addWidget(button);
 
         auto *right = new QWidget(panes);
         auto *rightLayout = new QVBoxLayout(right);
@@ -147,29 +157,38 @@ void PhoneWindow::showFilesystem()
         javaGames_ = new QPushButton("Java games", right);
         exportList_ = new QPushButton("Export list...", right);
         backupNvm_ = new QPushButton("Back up NVM...", right);
-        for (auto *button : {refresh, javaGames_, exportList_, backupNvm_}) phoneButtons->addWidget(button);
+        for (auto *button : {refresh, javaGames_, exportList_, backupNvm_})
+            phoneButtons->addWidget(button);
         fsStatus_ = new QLabel(filesystem_);
         fsStatus_->setWordWrap(true);
         fsStatus_->setTextFormat(Qt::PlainText);
         layout->addWidget(fsStatus_);
 
         connect(addFiles, &QPushButton::clicked, this, [this] {
-            addImportFiles(QFileDialog::getOpenFileNames(filesystem_, "Add content to the import list", {},
+            addImportFiles(QFileDialog::getOpenFileNames(
+                filesystem_, "Add content to the import list", {},
                 "Phone content (*.mmf *.mid *.imy *.png *.jpg *.jpeg *.gif *.bmp *.jar);;All files (*)"));
         });
         connect(removeFiles_, &QPushButton::clicked, this, [this] {
             const auto selected = importList_->selectionModel()->selectedRows();
             for (int row = imports_.size() - 1; row >= 0; --row)
-                if (selected.contains(importList_->model()->index(row, 0))) imports_.remove(row);
+                if (selected.contains(importList_->model()->index(row, 0)))
+                    imports_.remove(row);
             refreshImportQueue();
         });
-        connect(startQueue_, &QPushButton::clicked, this, [this] { importRunning_ = true; startNextImport(); });
+        connect(startQueue_, &QPushButton::clicked, this, [this] {
+            importRunning_ = true;
+            startNextImport();
+        });
         connect(stopQueue_, &QPushButton::clicked, this, [this] {
             importRunning_ = false;
             importMessage_ = "Queue stopped. The active phone write can finish; pending files stay queued.";
             refreshFilesystem();
         });
-        connect(showSystem, &QCheckBox::toggled, this, [this](bool enabled) { showSystem_ = enabled; refreshFilesystem(); });
+        connect(showSystem, &QCheckBox::toggled, this, [this](bool enabled) {
+            showSystem_ = enabled;
+            refreshFilesystem();
+        });
         connect(refresh, &QPushButton::clicked, this, &PhoneWindow::refreshFilesystem);
         connect(javaGames_, &QPushButton::clicked, this, &PhoneWindow::openJavaGames);
         connect(exportList_, &QPushButton::clicked, this, [this] { exportFilesystem(false); });
@@ -183,7 +202,8 @@ void PhoneWindow::showFilesystem()
 
 void PhoneWindow::refreshFilesystem()
 {
-    if (!filesystem_) return;
+    if (!filesystem_)
+        return;
     UserDirectory directory{};
     phoneFiles_->setRowCount(0);
     const bool valid = userfs_directory(&machine_, &directory);
@@ -191,19 +211,26 @@ void PhoneWindow::refreshFilesystem()
         for (unsigned i = 0; i < directory.count; ++i) {
             const UserFile &file = directory.files[i];
             const bool java = !strncmp(file.name, "FFS_JAVA_", 9);
-            if (!showSystem_ && file.type != 6 && file.type != 7 && !java) continue;
+            if (!showSystem_ && file.type != 6 && file.type != 7 && !java)
+                continue;
             QByteArray name(file.name);
             for (char &ch : name)
-                if (static_cast<unsigned char>(ch) < 32 || ch == 127) ch = '?';
+                if (static_cast<unsigned char>(ch) < 32 || ch == 127)
+                    ch = '?';
             const int row = phoneFiles_->rowCount();
             phoneFiles_->insertRow(row);
-            setRow(phoneFiles_, row, {QString::fromLatin1(name), contentKind(java ? 10 : file.type),
-                                     QString::number(file.size), QString::number(file.id, 16).toUpper().rightJustified(4, '0')});
+            setRow(phoneFiles_, row,
+                   {QString::fromLatin1(name), contentKind(java ? 10 : file.type), QString::number(file.size),
+                    QString::number(file.id, 16).toUpper().rightJustified(4, '0')});
         }
     }
-    QString status = valid ? QString("%1 visible files; %2 total records. Imports use the phone's own storage.")
-                                 .arg(phoneFiles_->rowCount()).arg(directory.count) : QString::fromUtf8(directory.error);
-    if (!importMessage_.isEmpty()) status += '\n' + importMessage_;
+    QString status = valid
+                         ? QString("%1 visible files; %2 total records. Imports use the phone's own storage.")
+                               .arg(phoneFiles_->rowCount())
+                               .arg(directory.count)
+                         : QString::fromUtf8(directory.error);
+    if (!importMessage_.isEmpty())
+        status += '\n' + importMessage_;
     fsStatus_->setText(status);
     exportList_->setEnabled(valid);
     refreshImportQueue();
@@ -211,7 +238,8 @@ void PhoneWindow::refreshFilesystem()
 
 void PhoneWindow::refreshImportQueue()
 {
-    if (!filesystem_) return;
+    if (!filesystem_)
+        return;
     const QStringList statuses = {"Queued", "Starting", "Waiting for phone storage", "Imported", "Failed"};
     bool queued = false;
     importList_->setRowCount(imports_.size());
@@ -219,11 +247,13 @@ void PhoneWindow::refreshImportQueue()
         const ImportItem &item = imports_[row];
         const QString status = item.error.isEmpty() ? statuses[static_cast<int>(item.status)] : item.error;
         queued |= item.status == ImportStatus::Queued;
-        setRow(importList_, row, {QFileInfo(item.path).fileName(), contentKind(item.type), QString::number(item.size), status});
+        setRow(importList_, row,
+               {QFileInfo(item.path).fileName(), contentKind(item.type), QString::number(item.size), status});
         importList_->item(row, 3)->setToolTip(status);
     }
     const bool busy = importCurrent_ >= 0 || content_.active || importRunning_;
-    const bool ready = storage_.active && !storage_.provision && !storage_.defaults_boot && !machine_.cpu.halted;
+    const bool ready = storage_.active && storage_.saved && !storage_.provision && !storage_.defaults_boot &&
+                       !importDiscard_ && !machine_.cpu.halted && !machine_powered_off(&machine_);
     startQueue_->setEnabled(queued && ready && machine_.import_trigger && !busy);
     stopQueue_->setEnabled(importRunning_);
     javaGames_->setEnabled(ready && machine_.java_ready && !busy);
@@ -235,9 +265,11 @@ void PhoneWindow::refreshImportQueue()
 void PhoneWindow::addImportFiles(const QStringList &paths)
 {
     for (const QString &path : paths) {
-        if (imports_.size() == 256) break;
+        if (imports_.size() == 256)
+            break;
         QFileInfo file(path);
-        if (!file.isFile() || file.size() > UINT32_MAX) continue;
+        if (!file.isFile() || file.size() > UINT32_MAX)
+            continue;
         const QString ext = file.suffix().toLower();
         ImportItem item{};
         item.path = file.absoluteFilePath();
@@ -251,15 +283,18 @@ void PhoneWindow::addImportFiles(const QStringList &paths)
 static const UserFile *javaRegistry(const UserDirectory &directory)
 {
     for (unsigned i = 0; i < directory.count; ++i)
-        if (!strcmp(directory.files[i].name, "FFS_JAVA_03")) return &directory.files[i];
+        if (!strcmp(directory.files[i].name, "FFS_JAVA_03"))
+            return &directory.files[i];
     return nullptr;
 }
 
 void PhoneWindow::startNextImport()
 {
-    if (!importRunning_) return;
+    if (!importRunning_)
+        return;
     int row = 0;
-    while (row < imports_.size() && imports_[row].status != ImportStatus::Queued) ++row;
+    while (row < imports_.size() && imports_[row].status != ImportStatus::Queued)
+        ++row;
     if (row == imports_.size()) {
         importRunning_ = false;
         importMessage_ = "Import queue complete.";
@@ -269,7 +304,8 @@ void PhoneWindow::startNextImport()
     UserDirectory directory{};
     uint32_t registryId = 0;
     if (userfs_directory(&machine_, &directory)) {
-        if (const UserFile *registry = javaRegistry(directory)) registryId = registry->id;
+        if (const UserFile *registry = javaRegistry(directory))
+            registryId = registry->id;
     }
     if (!loadFirmware(firmware_, State::Paused)) {
         importRunning_ = false;
@@ -279,7 +315,8 @@ void PhoneWindow::startNextImport()
 
     importCurrent_ = row;
     ImportItem &item = imports_[row];
-    if (!content_import_open_decoded(&content_, &machine_, QFile::encodeName(item.path).constData(), decodePicture)) {
+    if (!content_import_open_decoded(&content_, &machine_, QFile::encodeName(item.path).constData(),
+                                     decodePicture)) {
         importFailed(QString::fromUtf8(content_.error));
         return;
     }
@@ -297,7 +334,8 @@ void PhoneWindow::startNextImport()
 
 void PhoneWindow::openJavaGames()
 {
-    if (!loadFirmware(firmware_, State::Paused)) return;
+    if (!loadFirmware(firmware_, State::Paused))
+        return;
     if (!content_java_menu(&content_, &machine_)) {
         importFailed(QString::fromUtf8(content_.error));
         return;
@@ -311,16 +349,18 @@ void PhoneWindow::openJavaGames()
 
 void PhoneWindow::importAccepted()
 {
-    if (importCurrent_ < 0) importMessage_ = "Native Java menu opened on the phone screen.";
+    if (importCurrent_ < 0)
+        importMessage_ = "Native Java menu opened on the phone screen.";
     else {
         ImportItem &item = imports_[importCurrent_];
         /* The core can add a suffix if this filename is already in use. */
         item.name = QString::fromLatin1(content_.name);
         item.status = ImportStatus::Storing;
         item.accepted = machine_.cpu.instructions;
-        importMessage_ = item.type == 10 ?
-            "Native Java installer running; wait for Installed, then press Close on the phone. Large apps may need Extended Java buffers." :
-            "Import accepted by the guest; waiting for the flash task to store it.";
+        importMessage_ =
+            item.type == 10
+                ? "Native Java installer running; wait for Installed, then press Close on the phone. Large apps may need Extended Java buffers."
+                : "Import accepted by the guest; waiting for the flash task to store it.";
     }
     content_import_release(&content_);
     refreshFilesystem();
@@ -334,7 +374,8 @@ void PhoneWindow::importFailed(const QString &reason)
         item.error = reason;
         item.status = ImportStatus::Failed;
     }
-    if (machine_.guest_busy) machine_.cpu.halted = 1; /* Reset before resuming a borrowed guest task. */
+    if (machine_.guest_busy)
+        machine_.cpu.halted = 1; /* Reset before resuming a borrowed guest task. */
     content_import_release(&content_);
     importCurrent_ = -1;
     importRunning_ = false;
@@ -344,19 +385,24 @@ void PhoneWindow::importFailed(const QString &reason)
 
 void PhoneWindow::checkImport()
 {
-    if (importCurrent_ < 0 && !content_.active) return;
-    const bool expired = machine_.clock.attached ? machine_.clock.nanoseconds - importStartNs_ >= UINT64_C(300000000000) :
-                         machine_.cpu.instructions - importStartInstructions_ >= UINT64_C(600000000);
+    if (importCurrent_ < 0 && !content_.active)
+        return;
+    const bool expired = machine_.clock.attached
+                             ? machine_.clock.nanoseconds - importStartNs_ >= UINT64_C(300000000000)
+                             : machine_.cpu.instructions - importStartInstructions_ >= UINT64_C(600000000);
     if (expired) {
         importFailed("Phone did not finish within five emulated minutes. Reset before retrying.");
         setState(State::Stopped, importMessage_);
         return;
     }
-    if (importCurrent_ < 0) return;
+    if (importCurrent_ < 0)
+        return;
     ImportItem &item = imports_[importCurrent_];
-    if (item.status != ImportStatus::Storing || machine_.cpu.instructions - item.accepted < 8000000) return;
+    if (item.status != ImportStatus::Storing || machine_.cpu.instructions - item.accepted < 8000000)
+        return;
     UserDirectory directory{};
-    if (!userfs_directory(&machine_, &directory)) return;
+    if (!userfs_directory(&machine_, &directory))
+        return;
 
     bool stored = false;
     if (item.type == 10) {
@@ -365,15 +411,18 @@ void PhoneWindow::checkImport()
     } else {
         for (unsigned i = 0; i < directory.count; ++i) {
             const UserFile &file = directory.files[i];
-            if (item.name == QString::fromLatin1(file.name) && file.type == item.type && file.size == item.size) {
+            if (item.name == QString::fromLatin1(file.name) && file.type == item.type &&
+                file.size == item.size) {
                 stored = true;
                 break;
             }
         }
     }
-    if (!stored) return;
-    if (!saveStorage(true)) {
-        importFailed("Could not commit the imported file to persistent NVM");
+    if (!stored)
+        return;
+    if (!nvram_store_flush(&storage_, &machine_)) {
+        importFailed(QString::fromUtf8(machine_.error));
+        setState(State::Stopped, "Stopped - NVM save failed");
         return;
     }
     item.status = ImportStatus::Imported;
@@ -389,10 +438,12 @@ void PhoneWindow::exportFilesystem(bool backup)
     dialog.setAcceptMode(QFileDialog::AcceptSave);
     dialog.setNameFilter(backup ? "NVM backup (*.snv)" : "Directory listing (*.tsv)");
     dialog.setDefaultSuffix(backup ? "snv" : "tsv");
-    if (dialog.exec() != QDialog::Accepted) return;
+    if (dialog.exec() != QDialog::Accepted)
+        return;
     const QByteArray path = QFile::encodeName(dialog.selectedFiles().constFirst());
     if (storage_.active && plat_same_file(path.constData(), storage_.path)) {
-        QMessageBox::warning(filesystem_, "Phone filesystem", "Choose a file other than the active phone snapshot.");
+        QMessageBox::warning(filesystem_, "Phone filesystem",
+                             "Choose a file other than the active phone snapshot.");
         return;
     }
     if (backup) {
@@ -400,8 +451,10 @@ void PhoneWindow::exportFilesystem(bool backup)
             QMessageBox::warning(filesystem_, "NVM backup", QString::fromUtf8(machine_.error));
     } else {
         UserDirectory directory{};
-        if (!userfs_directory(&machine_, &directory) || !userfs_export_directory(&directory, path.constData()))
-            QMessageBox::warning(filesystem_, "Directory export", *directory.error ?
-                                 QString::fromUtf8(directory.error) : "Could not export the phone directory.");
+        if (!userfs_directory(&machine_, &directory) ||
+            !userfs_export_directory(&directory, path.constData()))
+            QMessageBox::warning(filesystem_, "Directory export",
+                                 *directory.error ? QString::fromUtf8(directory.error)
+                                                  : "Could not export the phone directory.");
     }
 }

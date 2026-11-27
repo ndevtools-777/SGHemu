@@ -34,8 +34,7 @@ int plat_local_time(PlatDateTime *out)
 
 int plat_set_high_priority(int enabled)
 {
-    return SetPriorityClass(GetCurrentProcess(),
-                            enabled ? HIGH_PRIORITY_CLASS : NORMAL_PRIORITY_CLASS) != 0;
+    return SetPriorityClass(GetCurrentProcess(), enabled ? HIGH_PRIORITY_CLASS : NORMAL_PRIORITY_CLASS) != 0;
 }
 
 PlatDir *plat_dir_open(const char *path)
@@ -96,23 +95,20 @@ int plat_is_directory(const char *path)
 {
     DWORD attributes = GetFileAttributesA(path);
 
-    return attributes != INVALID_FILE_ATTRIBUTES &&
-           (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
 }
 
 int plat_same_file(const char *a, const char *b)
 {
     BY_HANDLE_FILE_INFORMATION left, right;
-    HANDLE first = CreateFileA(a, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                               NULL, OPEN_EXISTING, 0, NULL);
-    HANDLE second = CreateFileA(b, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                                NULL, OPEN_EXISTING, 0, NULL);
+    HANDLE first = CreateFileA(a, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                               OPEN_EXISTING, 0, NULL);
+    HANDLE second = CreateFileA(b, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                                OPEN_EXISTING, 0, NULL);
     int same = first != INVALID_HANDLE_VALUE && second != INVALID_HANDLE_VALUE &&
-               GetFileInformationByHandle(first, &left) &&
-               GetFileInformationByHandle(second, &right) &&
+               GetFileInformationByHandle(first, &left) && GetFileInformationByHandle(second, &right) &&
                left.dwVolumeSerialNumber == right.dwVolumeSerialNumber &&
-               left.nFileIndexHigh == right.nFileIndexHigh &&
-               left.nFileIndexLow == right.nFileIndexLow;
+               left.nFileIndexHigh == right.nFileIndexHigh && left.nFileIndexLow == right.nFileIndexLow;
 
     if (first != INVALID_HANDLE_VALUE)
         CloseHandle(first);
@@ -151,8 +147,7 @@ size_t plat_absolute_path(const char *path, char *out, size_t size)
 
 FILE *plat_create_new(const char *path)
 {
-    HANDLE handle = CreateFileA(path, GENERIC_WRITE, 0, NULL, CREATE_NEW,
-                                FILE_ATTRIBUTE_NORMAL, NULL);
+    HANDLE handle = CreateFileA(path, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
     int descriptor;
     FILE *file;
 
@@ -181,8 +176,7 @@ int plat_flush(FILE *file)
 void *plat_lock_file(const char *path)
 {
     /* No sharing mode: the file is exclusively locked while it is open. */
-    HANDLE handle = CreateFileA(path, GENERIC_WRITE, 0, NULL, OPEN_ALWAYS,
-                                FILE_ATTRIBUTE_NORMAL, NULL);
+    HANDLE handle = CreateFileA(path, GENERIC_WRITE, 0, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
 
     return handle == INVALID_HANDLE_VALUE ? NULL : handle;
 }

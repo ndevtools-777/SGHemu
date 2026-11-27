@@ -14,7 +14,9 @@ typedef struct {
     uint32_t delay, address, length;
 } Ma3Packet;
 
-typedef struct { uint64_t due, period; } Ma3Timer;
+typedef struct {
+    uint64_t due, period;
+} Ma3Timer;
 
 typedef struct {
     uint64_t frames, nonzero, underruns;
@@ -67,7 +69,9 @@ typedef struct {
 int ma3_attach(Ma3 *m, Bus *bus, Intc *intc, uint32_t base, uint32_t irq_mask, uint32_t sequence_quantum_ns);
 /* Bind before execution. A PLL clock uses nanoseconds (1000000000 Hz). */
 void ma3_set_clock(Ma3 *m, const uint64_t *ticks, uint32_t ticks_hz);
+void ma3_cold_reset(Ma3 *m);
 void ma3_advance(Ma3 *m, uint64_t ticks);
+int ma3_motor_on(const Ma3 *m);
 int ma3_open_audio(Ma3 *m, int speakers, const char *wav);
 int ma3_close_audio(Ma3 *m);
 void ma3_set_mixer(Ma3 *m, Ma3Mixer mixer, void *context);

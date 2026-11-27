@@ -3,6 +3,7 @@
 
 Usage: compare_wav.py <a.wav> <a_start_s> <a_len_s> <b.wav> <b_start_s> <b_len_s>
 """
+
 import sys
 import wave
 
@@ -11,7 +12,7 @@ import numpy as np
 
 def load(path):
     w = wave.open(path)
-    a = np.frombuffer(w.readframes(w.getnframes()), dtype='<i2').reshape(-1, w.getnchannels())
+    a = np.frombuffer(w.readframes(w.getnframes()), dtype="<i2").reshape(-1, w.getnchannels())
     return a.mean(axis=1).astype(np.float64), w.getframerate()
 
 
@@ -21,8 +22,8 @@ def main():
     A, sr = load(pa)
     B, sr2 = load(pb)
     assert sr == sr2
-    a = A[int(sa * sr):int((sa + la) * sr)]
-    b = B[int(sb * sr):int((sb + lb) * sr)]
+    a = A[int(sa * sr) : int((sa + la) * sr)]
+    b = B[int(sb * sr) : int((sb + lb) * sr)]
     n = min(len(a), len(b))
     a, b = a[:n], b[:n]
     print(f"A: {len(a)} frames rms={np.sqrt((a**2).mean()):.1f}  B: rms={np.sqrt((b**2).mean()):.1f}")
@@ -34,11 +35,11 @@ def main():
     fa = np.fft.rfft(a, N)
     fb = np.fft.rfft(b, N)
     cc = np.fft.irfft(fa * np.conj(fb), N)
-    norm = np.sqrt((a ** 2).sum() * (b ** 2).sum())
+    norm = np.sqrt((a**2).sum() * (b**2).sum())
     peak = int(np.argmax(np.abs(cc)))
     if peak > N // 2:
         peak -= N
-    print(f"best lag={peak} samples ({peak/sr*1000:.1f} ms)  normalized_corr={cc[peak]/norm:.4f}")
+    print(f"best lag={peak} samples ({peak / sr * 1000:.1f} ms)  normalized_corr={cc[peak] / norm:.4f}")
     # spectral magnitude correlation (timbre/spatial shape, tempo-free)
     fa2 = np.abs(np.fft.rfft(a * np.hanning(n)))
     fb2 = np.abs(np.fft.rfft(b * np.hanning(n)))

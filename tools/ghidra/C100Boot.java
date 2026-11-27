@@ -7,6 +7,7 @@ import ghidra.program.model.lang.Register;
 import ghidra.program.model.listing.*;
 import java.io.*;
 import java.math.BigInteger;
+
 public class C100Boot extends GhidraScript {
     private void range(PrintWriter out, long begin, long end, int thumb) throws Exception {
         Address a = toAddr(begin), b = toAddr(end - 1);
@@ -19,8 +20,12 @@ public class C100Boot extends GhidraScript {
                 new DisassembleCommand(next, new AddressSet(a, b), false).applyTo(currentProgram, monitor);
         }
         InstructionIterator it = currentProgram.getListing().getInstructions(new AddressSet(a, b), true);
-        while (it.hasNext()) { Instruction i = it.next(); out.println(i.getAddress() + " " + i); }
+        while (it.hasNext()) {
+            Instruction i = it.next();
+            out.println(i.getAddress() + " " + i);
+        }
     }
+
     public void run() throws Exception {
         try (PrintWriter out = new PrintWriter(getScriptArgs()[0])) {
             out.println(currentProgram.getName() + " " + currentProgram.getLanguageID());

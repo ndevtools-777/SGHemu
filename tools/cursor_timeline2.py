@@ -7,13 +7,14 @@ select 11 and the data read.
 
 Usage: python tools\\cursor_timeline2.py <out.log> [lo] [hi]
 """
+
 import sys
 
 
 def main():
     path = sys.argv[1]
     sel = -1
-    hist = []          # pending port-4 bytes while a status-3 packet is open
+    hist = []  # pending port-4 bytes while a status-3 packet is open
     reads = []
     for line in open(path, "r", encoding="utf-8", errors="replace"):
         p = line.split()

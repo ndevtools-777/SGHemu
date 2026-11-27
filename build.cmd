@@ -1,20 +1,22 @@
 @echo off
 setlocal
 cd /d "%~dp0"
+
+rem Use the active developer environment, or load the x86 build tools.
 if not defined VSCMD_VER (
-  call "E:\Microsoft Visual Studio\18\BuildTools\VC\Auxiliary\Build\vcvars32.bat"
-  if errorlevel 1 exit /b 1
+    call "E:\Microsoft Visual Studio\18\BuildTools\VC\Auxiliary\Build\vcvars32.bat"
+    if errorlevel 1 exit /b 1
 )
 if /i not "%VSCMD_ARG_TGT_ARCH%"=="x86" (
-  echo SGHemu requires an x86 developer environment.
-  exit /b 1
+    echo SGHemu requires an x86 developer environment.
+    exit /b 1
 )
 
 set "SGHEMU_MAKE=mingw32-make.exe"
 where /q "%SGHEMU_MAKE%" || set "SGHEMU_MAKE=make.exe"
 where /q "%SGHEMU_MAKE%" || (
-  echo Native Windows GNU Make is required. Put mingw32-make.exe or make.exe on PATH.
-  exit /b 1
+    echo Native Windows GNU Make is required. Put mingw32-make.exe or make.exe on PATH.
+    exit /b 1
 )
 
 rem Keep the original build\ output paths and rebuild when switching configs.

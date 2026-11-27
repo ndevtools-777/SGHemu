@@ -54,23 +54,29 @@ static int profile_read(Profile *profile, const char *directory, const char *pat
     char line[2048];
     int ok = 0;
 
-    if (!f) return 0;
+    if (!f)
+        return 0;
     memset(profile, 0, sizeof(*profile));
     while (fgets(line, sizeof(line), f)) {
         char *value, *end;
-        if (line[0] == '#' || line[0] == '\r' || line[0] == '\n') continue;
+        if (line[0] == '#' || line[0] == '\r' || line[0] == '\n')
+            continue;
         value = strchr(line, '=');
-        if (!value) goto done;
+        if (!value)
+            goto done;
         *value = 0;
         ++value;
         end = strpbrk(value, "\r\n");
-        if (end) *end = 0;
+        if (end)
+            *end = 0;
 
         if (!strcmp(line, "name")) {
-            if (strlen(value) >= sizeof(profile->match.name)) goto done;
+            if (strlen(value) >= sizeof(profile->match.name))
+                goto done;
             strcpy(profile->match.name, value);
         } else if (!strcmp(line, "model")) {
-            if (!join(profile->match.model, directory, value)) goto done;
+            if (!join(profile->match.model, directory, value))
+                goto done;
         } else if (!strcmp(line, "sha256_1") || !strcmp(line, "sha256_2")) {
             unsigned slot = !strcmp(line, "sha256_1") ? 0 : 1;
             if (strlen(value) != 64 || strspn(value, "0123456789abcdefABCDEF") != 64)
@@ -80,8 +86,8 @@ static int profile_read(Profile *profile, const char *directory, const char *pat
             goto done;
         }
     }
-    ok = !ferror(f) && profile->match.name[0] && profile->match.model[0] &&
-         profile->hash[0][0] && profile->hash[1][0];
+    ok = !ferror(f) && profile->match.name[0] && profile->match.model[0] && profile->hash[0][0] &&
+         profile->hash[1][0];
 done:
     fclose(f);
     return ok;
@@ -147,8 +153,7 @@ static void match_images(Scan *scan, const char *directory, unsigned depth)
     plat_dir_close(dir);
 }
 
-unsigned firmware_scan(const char *folder, const char *models_root,
-                       FirmwareMatch *matches, unsigned capacity)
+unsigned firmware_scan(const char *folder, const char *models_root, FirmwareMatch *matches, unsigned capacity)
 {
     Scan *scan = calloc(1, sizeof(*scan));
     unsigned i, count = 0;

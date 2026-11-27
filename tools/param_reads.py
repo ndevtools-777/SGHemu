@@ -8,6 +8,7 @@ guest's polling pattern is visible.
 
 Usage: python tools\\param_reads.py <out.log> [lo] [hi] [top]
 """
+
 import sys
 from collections import Counter
 
