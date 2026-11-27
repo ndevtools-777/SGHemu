@@ -15,7 +15,8 @@
 static void put32(uint8_t *p, uint32_t v)
 {
     unsigned i;
-    for (i = 0; i < 4; ++i) p[i] = (uint8_t)(v >> (i * 8));
+    for (i = 0; i < 4; ++i)
+        p[i] = (uint8_t)(v >> (i * 8));
 }
 
 static int fail(Machine *m, const char *reason)
@@ -46,7 +47,8 @@ static int snapshot_header(Machine *m, uint8_t out[HEADER_SIZE])
     for (i = 0; i < m->rom_count; ++i) {
         uint8_t *entry = out + 24 + i * 72;
         char hash[65];
-        if (!firmware_sha256(m->roms[i].path, hash)) return fail(m, "cannot hash source firmware");
+        if (!firmware_sha256(m->roms[i].path, hash))
+            return fail(m, "cannot hash source firmware");
         put32(entry, m->roms[i].base);
         put32(entry + 4, (uint32_t)m->roms[i].size);
         memcpy(entry + 8, hash, 64);
@@ -54,16 +56,17 @@ static int snapshot_header(Machine *m, uint8_t out[HEADER_SIZE])
     return 1;
 }
 
-int nvram_load(Machine *m, const char *path)
+static int load_snapshot(Machine *m, const char *path)
 {
     uint8_t expected[HEADER_SIZE], actual[HEADER_SIZE], hash[32];
     uint8_t *data;
     FILE *f;
     int ok;
-    if (m->cpu.instructions || m->cpu.cycles) return fail(m, "load requires a freshly reset machine");
-    if (!snapshot_header(m, expected)) return 0;
+    if (!snapshot_header(m, expected))
+        return 0;
     f = fopen(path, "rb");
-    if (!f) return fail(m, "cannot open input file");
+    if (!f)
+        return fail(m, "cannot open input file");
     if (fread(actual, 1, HEADER_SIZE, f) != HEADER_SIZE || memcmp(actual, expected, IDENTITY_SIZE)) {
         fclose(f);
         return fail(m, "header, firmware hashes or memory map mismatch");
@@ -74,15 +77,24 @@ int nvram_load(Machine *m, const char *path)
         return fail(m, "allocation failed");
     }
     ok = fread(data, 1, m->nvram_size, f) == m->nvram_size && fgetc(f) == EOF && !ferror(f);
-    if (fclose(f)) ok = 0;
+    if (fclose(f))
+        ok = 0;
     if (ok) {
         digest(data, m->nvram_size, hash);
         ok = !memcmp(hash, actual + IDENTITY_SIZE, 32);
     }
     /* Only copy into emulated flash after validating the entire snapshot. */
-    if (ok) memcpy(m->nvram_data, data, m->nvram_size);
+    if (ok)
+        memcpy(m->nvram_data, data, m->nvram_size);
     free(data);
     return ok ? 1 : fail(m, "truncated, oversized or damaged payload");
+}
+
+int nvram_load(Machine *m, const char *path)
+{
+    if (m->cpu.instructions || m->cpu.cycles)
+        return fail(m, "load requires a freshly reset machine");
+    return load_snapshot(m, path);
 }
 
 int nvram_save(Machine *m, const char *path)
@@ -110,8 +122,7 @@ int nvram_save(Machine *m, const char *path)
     if (!f)
         return fail(m, "cannot create temporary output (existing .tmp is left untouched)");
     ok = fwrite(header, 1, HEADER_SIZE, f) == HEADER_SIZE &&
-         fwrite(m->nvram_data, 1, m->nvram_size, f) == m->nvram_size &&
-         plat_flush(f);
+         fwrite(m->nvram_data, 1, m->nvram_size, f) == m->nvram_size && plat_flush(f);
     if (fclose(f))
         ok = 0;
     if (ok)
@@ -232,25 +243,38 @@ int nvram_store_flush(NvramStore *s, Machine *m)
     return 1;
 }
 
+int nvram_store_restore_interrupted(const NvramStore *s, Machine *m)
+{
+    int at_reset = m->c100.reset_count && m->cpu.clock_cycles == m->c100.reset_cycle;
+    if ((!machine_powered_off(m) && !at_reset) || !s->active || !s->saved)
+        return fail(m, "restoring an interrupted import requires Standby or a fresh reset and a saved snapshot");
+    return load_snapshot(m, s->path);
+}
+
 int nvram_store_import(NvramStore *s, Machine *m, const char *path)
 {
     uint8_t *previous;
     int provision;
     unsigned stage;
-    if (!s->active) return fail(m, "no active storage session");
+    if (!s->active)
+        return fail(m, "no active storage session");
     previous = malloc(m->nvram_size);
-    if (!previous) return fail(m, "allocation failed");
+    if (!previous)
+        return fail(m, "allocation failed");
     memcpy(previous, m->nvram_data, m->nvram_size);
     if (!nvram_load(m, path)) {
         free(previous);
         return 0;
     }
-    provision = s->provision; stage = s->stage;
-    s->provision = 0; s->stage = 0;
+    provision = s->provision;
+    stage = s->stage;
+    s->provision = 0;
+    s->stage = 0;
     if (!nvram_store_flush(s, m)) {
         /* A later automatic save must not commit a failed import. */
         memcpy(m->nvram_data, previous, m->nvram_size);
-        s->provision = provision; s->stage = stage;
+        s->provision = provision;
+        s->stage = stage;
         free(previous);
         return 0;
     }
@@ -262,30 +286,56 @@ int nvram_store_step(NvramStore *s, Machine *m)
 {
     Arm7 *c = &m->cpu;
     unsigned i;
-    if (s->active && s->defaults_boot) for (i = 0; i < m->irom.count; ++i)
-        if (m->irom.services[i].kind == IROM_VERSION && m->irom.services[i].calls) {
-            /* Decoded C100 startup reaches the version query after its UI records
+    if (machine_powered_off(m))
+        return 1;
+    if (s->reset_count != m->c100.reset_count) {
+        /* Reset invalidates the parked formatter call. */
+        s->reset_count = m->c100.reset_count;
+        if (s->provision && s->stage < 3)
+            s->stage = 0;
+    }
+    if (s->active && s->defaults_boot)
+        for (i = 0; i < m->irom.count; ++i)
+            if (m->irom.services[i].kind == IROM_VERSION && m->irom.services[i].calls) {
+                /* Decoded C100 startup reaches the version query after its UI records
                finish loading. Persist defaults, then boot once from settled NVM. */
-            if (!nvram_store_flush(s, m)) return 0;
-            s->defaults_boot = 0; return 2;
-        }
-    if (!s->active || !s->provision || s->stage == 3) return 1;
+                if (!nvram_store_flush(s, m))
+                    return 0;
+                s->defaults_boot = 0;
+                return 2;
+            }
+    if (!s->active || !s->provision || s->stage == 3)
+        return 1;
     if (s->stage && c->instructions - s->caller.instructions > UINT64_C(100000000))
         return fail(m, "guest provisioning instruction limit exceeded");
-    if (c->r[15] != m->nv_trigger) return 1;
-    if (!(c->cpsr & ARM_T)) return fail(m, "provisioning expected Thumb caller");
+    if (c->r[15] != m->nv_trigger)
+        return 1;
+    if (!(c->cpsr & ARM_T))
+        return fail(m, "provisioning expected Thumb caller");
     if (s->stage == 0) {
-        s->caller = *c; s->stage = 1;
-        c->r[0] = 0; c->r[14] = m->nv_trigger | 1u; c->r[15] = m->nv_format;
+        s->caller = *c;
+        s->stage = 1;
+        c->r[0] = 0;
+        c->r[14] = m->nv_trigger | 1u;
+        c->r[15] = m->nv_format;
     } else if (s->stage == 1) {
-        if (c->r[0] != 0) return fail(m, "guest factory formatting failed");
-        s->stage = 2; c->r[0] = 0; c->r[14] = m->nv_trigger | 1u; c->r[15] = m->nv_marker;
+        if (c->r[0] != 0)
+            return fail(m, "guest factory formatting failed");
+        s->stage = 2;
+        c->r[0] = 0;
+        c->r[14] = m->nv_trigger | 1u;
+        c->r[15] = m->nv_marker;
     } else {
-        uint64_t instructions = c->instructions, cycles = c->cycles,clock_cycles=c->clock_cycles;
-        if (c->r[0] != 1) return fail(m, "guest initialization-marker write failed");
-        *c = s->caller; c->instructions = instructions; c->cycles = cycles;c->clock_cycles=clock_cycles;
+        uint64_t instructions = c->instructions, cycles = c->cycles, clock_cycles = c->clock_cycles;
+        if (c->r[0] != 1)
+            return fail(m, "guest initialization-marker write failed");
+        *c = s->caller;
+        c->instructions = instructions;
+        c->cycles = cycles;
+        c->clock_cycles = clock_cycles;
         s->stage = 3;
-        if (!nvram_store_flush(s, m)) return 0;
+        if (!nvram_store_flush(s, m))
+            return 0;
         return 2; /* Service formatting precedes ordinary phone startup: cold reset required. */
     }
     return 1;

@@ -28,13 +28,14 @@ public class C100Xedk1 extends GhidraScript {
 
     private static final Pattern MAP_PAT =
         Pattern.compile("^\\s+(\\$\\S)\\s+0x([0-9a-fA-F]+)\\s+(\\S+)\\s*$");
-    private static final Pattern SYM_PAT =
-        Pattern.compile("^\\s{4}(\\S+)\\s+0x([0-9a-fA-F]+)\\s+(ARM Code|Thumb Code|Data)\\s+(\\d+)\\s+(\\S.*?)\\s*$");
+    private static final Pattern SYM_PAT = Pattern.compile(
+        "^\\s{4}(\\S+)\\s+0x([0-9a-fA-F]+)\\s+(ARM Code|Thumb Code|Data)\\s+(\\d+)\\s+(\\S.*?)\\s*$");
 
     private static final class MapEntry {
         final long address;
         final boolean thumb;
         final boolean code;
+
         MapEntry(long address, boolean thumb, boolean code) {
             this.address = address;
             this.thumb = thumb;
@@ -48,6 +49,7 @@ public class C100Xedk1 extends GhidraScript {
         final int size;
         final boolean thumb;
         final boolean code;
+
         Sym(String name, long address, int size, boolean thumb, boolean code) {
             this.name = name;
             this.address = address;
@@ -80,17 +82,15 @@ public class C100Xedk1 extends GhidraScript {
             if (map.matches()) {
                 String sym = map.group(1);
                 long address = Long.parseUnsignedLong(map.group(2), 16);
-                maps.add(new MapEntry(address, sym.equals("$t"),
-                    sym.equals("$t") || sym.equals("$a")));
+                maps.add(new MapEntry(address, sym.equals("$t"), sym.equals("$t") || sym.equals("$a")));
                 continue;
             }
             Matcher sym = SYM_PAT.matcher(line);
             if (sym.matches()) {
                 String type = sym.group(3);
-                syms.add(new Sym(sym.group(1),
-                    Long.parseUnsignedLong(sym.group(2), 16),
-                    Integer.parseInt(sym.group(4)),
-                    type.equals("Thumb Code"), !type.equals("Data")));
+                syms.add(new Sym(sym.group(1), Long.parseUnsignedLong(sym.group(2), 16),
+                                 Integer.parseInt(sym.group(4)), type.equals("Thumb Code"),
+                                 !type.equals("Data")));
             }
         }
         maps.sort(Comparator.comparingLong(entry -> entry.address));
@@ -136,14 +136,12 @@ public class C100Xedk1 extends GhidraScript {
                     if (function != null && !function.getName().equals(sym.name)) {
                         try {
                             function.setName(sym.name, SourceType.USER_DEFINED);
-                        }
-                        catch (Exception duplicate) {
+                        } catch (Exception duplicate) {
                             // A different alias already owns this entry point.
                         }
                     }
                     ++namedFunctions;
-                }
-                catch (Exception failed) {
+                } catch (Exception failed) {
                     // Keep going: one unreconcilable listing symbol must not abort the
                     // whole import, and auto-analysis will still recover the region.
                     ++skipped;
@@ -154,27 +152,24 @@ public class C100Xedk1 extends GhidraScript {
                 if (namedFunctions % 2000 == 0) {
                     println("functions: " + namedFunctions);
                 }
-            }
-            else {
+            } else {
                 if (getSymbolAt(start) == null) {
                     try {
                         createLabel(start, sym.name, false, SourceType.IMPORTED);
                         ++namedData;
-                    }
-                    catch (Exception bad) {
+                    } catch (Exception bad) {
                         // Invalid or duplicate label name; leave the address unnamed.
                     }
                 }
             }
         }
-        println("applied " + namedFunctions + " code functions and " + namedData
-            + " data labels (" + skipped + " skipped)");
+        println("applied " + namedFunctions + " code functions and " + namedData + " data labels (" +
+                skipped + " skipped)");
 
         if (currentProgram.getMemory().contains(toAddr(0x01000250L))) {
             try {
                 createLabel(toAddr(0x01000250L), "IMAGE_ENTRY_POINT", false, SourceType.IMPORTED);
-            }
-            catch (Exception ignored) {
+            } catch (Exception ignored) {
                 // Already labelled by the listing.
             }
         }
@@ -205,8 +200,7 @@ public class C100Xedk1 extends GhidraScript {
     private void applyMode(Address start, Address end, boolean thumb) throws Exception {
         try {
             setMode(start.getOffset(), end.getOffset(), thumb);
-        }
-        catch (ContextChangeException conflict) {
+        } catch (ContextChangeException conflict) {
             // A nested/overlapping listing symbol was already disassembled with the
             // other mode.  The current symbol owns this range, so redo it.  Widen the
             // clear to any instruction straddling start/end: clearListing() only
@@ -236,8 +230,8 @@ public class C100Xedk1 extends GhidraScript {
             long low = Math.max(start, block.getStart().getOffset());
             long high = Math.min(end, block.getEnd().getOffset());
             if (low <= high) {
-                currentProgram.getProgramContext().setValue(
-                    tmode, toAddr(low), toAddr(high), thumb ? BigInteger.ONE : BigInteger.ZERO);
+                currentProgram.getProgramContext().setValue(tmode, toAddr(low), toAddr(high),
+                                                            thumb ? BigInteger.ONE : BigInteger.ZERO);
             }
         }
     }

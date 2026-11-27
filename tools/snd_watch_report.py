@@ -21,12 +21,14 @@ the guest CPU in old builds; offline MA-3 port replays cannot produce it.
 
 Usage: python tools\\snd_watch_report.py [build/ma3-sndwatch.log] [ticks_per_sec]
 """
+
 import re
 import sys
 
 SND = re.compile(
     r"^(\d+) -+ SND mask=(\w\w) req=(\w\w) pulse=(\w\w) run=(\w\w) "
-    r"irq=(\w\w) en=(\w\w) eos=(\w\w)(?: ctr=(\w\w\w\w))?\s*$")
+    r"irq=(\w\w) en=(\w\w) eos=(\w\w)(?: ctr=(\w\w\w\w))?\s*$"
+)
 
 
 def parse(path):
@@ -35,17 +37,19 @@ def parse(path):
         match = SND.match(line)
         if not match:
             continue
-        events.append({
-            "tick": int(match.group(1)),
-            "mask": int(match.group(2), 16),
-            "req": int(match.group(3), 16),
-            "pulse": int(match.group(4), 16),
-            "run": int(match.group(5), 16),
-            "irq": int(match.group(6), 16),
-            "en": int(match.group(7), 16),
-            "eos": int(match.group(8), 16),
-            "ctr": int(match.group(9), 16) if match.group(9) else None,
-        })
+        events.append(
+            {
+                "tick": int(match.group(1)),
+                "mask": int(match.group(2), 16),
+                "req": int(match.group(3), 16),
+                "pulse": int(match.group(4), 16),
+                "run": int(match.group(5), 16),
+                "irq": int(match.group(6), 16),
+                "en": int(match.group(7), 16),
+                "eos": int(match.group(8), 16),
+                "ctr": int(match.group(9), 16) if match.group(9) else None,
+            }
+        )
     return events
 
 
@@ -76,11 +80,22 @@ def main():
             else:
                 notes.append("mask %02x->%02x" % (last_mask, event["mask"]))
         last_mask, last_eos = event["mask"], event["eos"]
-        print("  %8.3f %9d %4s %3d %5d %3d %3d %3d %3d %5s  %s" % (
-            event["tick"] / hz, event["tick"], "%02x" % event["mask"],
-            event["req"], event["pulse"], event["run"], event["irq"], event["en"],
-            event["eos"], "%04x" % event["ctr"] if event["ctr"] is not None else "-",
-            ", ".join(notes)))
+        print(
+            "  %8.3f %9d %4s %3d %5d %3d %3d %3d %3d %5s  %s"
+            % (
+                event["tick"] / hz,
+                event["tick"],
+                "%02x" % event["mask"],
+                event["req"],
+                event["pulse"],
+                event["run"],
+                event["irq"],
+                event["en"],
+                event["eos"],
+                "%04x" % event["ctr"] if event["ctr"] is not None else "-",
+                ", ".join(notes),
+            )
+        )
     print("\nverdict (silence chain: eos=1 -> eos=2 -> mask=9f):")
     pending = []
     stops = 0
@@ -94,14 +109,14 @@ def main():
             ones = [e for e in pending if e[0] == 1]
             twos = [e for e in pending if e[0] == 2]
             if ones and twos:
-                print("  tick %d: mask=9f preceded by eos=1@%d and eos=2@%d -> chain holds"
-                      % (event["tick"], ones[-1][1], twos[-1][1]))
+                print(
+                    "  tick %d: mask=9f preceded by eos=1@%d and eos=2@%d -> chain holds"
+                    % (event["tick"], ones[-1][1], twos[-1][1])
+                )
             else:
-                print("  tick %d: mask=9f with no preceding eos=1/2 -> chain broken"
-                      % event["tick"])
+                print("  tick %d: mask=9f with no preceding eos=1/2 -> chain broken" % event["tick"])
             pending = []
-    print("  stop events: %d; start events: %d" % (
-        stops, sum(1 for e in events if e["mask"] == 0xFF)))
+    print("  stop events: %d; start events: %d" % (stops, sum(1 for e in events if e["mask"] == 0xFF)))
 
 
 if __name__ == "__main__":

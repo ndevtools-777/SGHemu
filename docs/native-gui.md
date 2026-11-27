@@ -49,10 +49,12 @@ Encoding follows [3GPP TS 23.038 section 4](https://www.etsi.org/deliver/etsi_TS
 Integer LCD zoom 1x/2x/3x uses GDI nearest-neighbor `StretchDIBits`.
 
 File > Open firmware folder (Ctrl+O) identifies complete ROM pairs by SHA-256
-and automatically boots the selected profile. Multiple supported sets offer a
-selection menu. Unknown/incomplete sets report a clear message. File > Open
-model config is retained as an advanced workflow. Config ROM paths are relative
-to their config directory; the GUI locates its workspace relative to `build/`.
+and loads the selected profile in Standby. The saved firmware selection also
+starts in Standby at launch. Hold **End / Power (F4)** through startup. A brief
+press returns to Standby if the firmware has not set HOLD. The LCD starts disabled.
+Multiple supported sets offer a selection menu. Unknown/incomplete sets report
+a clear message. **Open model config** also supports RAM and diagnostic profiles
+that start stopped and run with F5. ROM paths are relative to the config directory.
 
 File > Phone filesystem manager opens a native directory inspector with Refresh,
 Export directory (TSV metadata) and Back up NVM. File-content export and MMF,
@@ -63,7 +65,7 @@ and memory map. It saves on pause, reset/model change, normal close, and changed
 storage checkpoints every five seconds while running. Unchanged storage is not
 rewritten. Manual Save has been removed. File > Import NVM snapshot and reset
 loads an explicitly selected `.snv` into a fresh reset and commits it to the
-automatic store; press F5 to run. The imported source is not overwritten.
+automatic store; press Power from Standby or F5 from Stopped. The imported source is not overwritten.
 Corrupt or concurrently locked saves block startup rather than being reformatted.
 
 When no save exists, C100 bring-up runs the guest factory-sector formatter and
@@ -76,7 +78,7 @@ formats erased flash. Partial/failed provisioning is not committed.
 
 C100 bring-up profiles insert a synthetic virtual SIM by default. **Emulation >
 Virtual SIM inserted (reset)** saves phone NVM, cold-resets with the opposite
-card-presence setting, and preserves whether execution was running or paused.
+card-presence setting, and preserves whether the phone was running, paused or in Standby.
 This is a reset-time switch, not hot insertion. The override remains in effect
 for the current GUI session. Card identity comes from `sim/test-sim.cfg` in the
 model folder. Card file changes are currently volatile; phone NVM remains

@@ -30,19 +30,20 @@ struct Firmware {
 };
 
 class PhoneWindow final : public QMainWindow {
-public:
+  public:
     PhoneWindow();
     ~PhoneWindow() override;
 
-protected:
+  protected:
     bool event(QEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;
     void keyReleaseEvent(QKeyEvent *event) override;
     void closeEvent(QCloseEvent *event) override;
 
-private:
-    enum class State { Empty, Running, Paused, Stopped };
+  private:
+    enum class State { Empty, Running, Paused, Stopped, Standby };
     enum class ImportStatus { Queued, Starting, Storing, Imported, Failed };
+
     struct ImportItem {
         QString path, name, error;
         uint32_t size, type, registryId = 0;
@@ -55,16 +56,17 @@ private:
     void openRom(bool second);
     void openSnapshot();
     void openRecentFirmware();
-    bool loadFirmware(Firmware firmware, State next, bool defaults = false,
-                      const QByteArray &snapshot = {});
-    bool saveStorage(bool commitImport = false);
+    bool loadFirmware(Firmware firmware, State next, bool defaults = false, const QByteArray &snapshot = {});
+    bool saveStorage();
     void setState(State state, const QString &detail = {});
     void updateUi();
     void runSlice();
     bool emulate(unsigned steps, State afterReset);
+    void enterStandby();
+    void advanceStandby(bool powerPressed = false);
     void refresh();
     void updateKey(unsigned key);
-    void releaseKeys();
+    void releaseKeys(uint32_t keep = 0);
     void updateTextKeys();
     void fitLcd();
     void openAudio();
@@ -105,10 +107,10 @@ private:
     QTimer runTimer_, uiTimer_;
     QElapsedTimer wallClock_, audioClock_;
     uint64_t audioGuestStart_ = 0;
-    qint64 lastSave_ = 0, lastClockSync_ = 0;
+    qint64 lastSave_ = 0, lastClockSync_ = 0, offSinceNs_ = 0;
     EmuSpeed speed_{};
     LcdView *lcd_;
-    QLabel *speedLabel_;
+    QLabel *speedLabel_, *ledIndicator_;
     QAction *run_, *pause_, *stop_, *step_, *snapshot_;
     QAction *continuationAction_, *simAction_, *priorityAction_, *clockAction_, *javaAction_;
     QAction *batteryLevel_, *batteryCable_, *cellAction_, *networkAction_, *smsAction_, *callAction_;

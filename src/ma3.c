@@ -2,8 +2,11 @@
 #include <string.h>
 
 enum { PACKET_DELAY, PACKET_ADDRESS, PACKET_LENGTH, PACKET_RAM, PACKET_PARAMETERS, PACKET_READ };
+
 enum { FRAME_ONLY, IMMEDIATE_WRITE, SEQUENCED_WRITE, READ_REQUEST };
+
 enum { TIMER_A_IRQ = 0x20, FIFO_IRQ = 0x80, FIFO_SERVICE_NS = 2000000 };
+
 #define NO_EVENT UINT64_MAX
 #define NS_PER_SECOND UINT64_C(1000000000)
 
@@ -20,7 +23,8 @@ static uint64_t sequence_deadline(const Ma3 *m)
 static uint64_t fifo_deadline(const Ma3 *m)
 {
     unsigned threshold = (m->parameter_ram[0x160] & 7u) * 64u;
-    if (m->fifo_count > threshold || (m->irq_flags & FIFO_IRQ)) return NO_EVENT;
+    if (m->fifo_count > threshold || (m->irq_flags & FIFO_IRQ))
+        return NO_EVENT;
     return m->fifo_due < m->now ? m->now : m->fifo_due;
 }
 
@@ -29,17 +33,21 @@ static uint64_t device_deadline(const Ma3 *m)
     uint64_t due = earlier(m->timers[0].due, m->timers[1].due);
     due = earlier(due, sequence_deadline(m));
     due = earlier(due, fifo_deadline(m));
-    if (m->water) due = earlier(due, m->water_next);
+    if (m->water)
+        due = earlier(due, m->water_next);
     return due;
 }
 
 static void update_deadline(Ma3 *m)
 {
     uint64_t due = device_deadline(m);
-    if (m->output && !m->stats.failed) due = earlier(due, m->now + FIFO_SERVICE_NS);
-    if (due == NO_EVENT || m->ticks_hz == NS_PER_SECOND) m->next_event = due;
-    else m->next_event = (due / NS_PER_SECOND) * m->ticks_hz +
-                         ((due % NS_PER_SECOND) * m->ticks_hz + NS_PER_SECOND - 1) / NS_PER_SECOND;
+    if (m->output && !m->stats.failed)
+        due = earlier(due, m->now + FIFO_SERVICE_NS);
+    if (due == NO_EVENT || m->ticks_hz == NS_PER_SECOND)
+        m->next_event = due;
+    else
+        m->next_event = (due / NS_PER_SECOND) * m->ticks_hz +
+                        ((due % NS_PER_SECOND) * m->ticks_hz + NS_PER_SECOND - 1) / NS_PER_SECOND;
 }
 
 static unsigned irq_status(const Ma3 *m)
@@ -93,9 +101,12 @@ static void led_event(Ma3 *m, unsigned value)
     ++m->led_events;
     if (m->led_on) {
         unsigned choices[3], count = 0, i;
-        if (!m->led_color) m->led_color = colors[ma_water_random(&m->led_rng) % 4];
+        if (!m->led_color)
+            m->led_color = colors[ma_water_random(&m->led_rng) % 4];
         else {
-            for (i = 0; i < 4; ++i) if (colors[i] != m->led_color) choices[count++] = colors[i];
+            for (i = 0; i < 4; ++i)
+                if (colors[i] != m->led_color)
+                    choices[count++] = colors[i];
             m->led_color = choices[ma_water_random(&m->led_rng) % count];
         }
     }
@@ -108,7 +119,8 @@ static void configure_timer(Ma3 *m, unsigned index, int restart)
     unsigned control = m->parameter_ram[index ? 0x158 : 0x155];
     uint64_t tick_ns = UINT64_C(37109) * m->parameter_ram[0x152];
     uint64_t period;
-    if (index && (control & 4u)) tick_ns = m->sequence_period;
+    if (index && (control & 4u))
+        tick_ns = m->sequence_period;
     period = (control & 1u) ? tick_ns * reload : 0;
     if (restart || timer->period != period) {
         timer->period = period;
@@ -122,12 +134,16 @@ static void sequence_set_period(Ma3 *m)
     uint64_t old = m->sequence_period;
     uint64_t period = (uint64_t)(divider ? divider : 1) * m->sequence_quantum_ns;
     uint64_t remaining = m->sequence_wait;
-    if (m->sequence_due != NO_EVENT) remaining = m->sequence_due > m->now ? m->sequence_due - m->now : 0;
-    if (m->water && divider) period = (period * m->water_scale + 50) / 100;
+    if (m->sequence_due != NO_EVENT)
+        remaining = m->sequence_due > m->now ? m->sequence_due - m->now : 0;
+    if (m->water && divider)
+        period = (period * m->water_scale + 50) / 100;
     /* Preserve sequence ticks (including a partial tick) on speed changes. */
     remaining = (remaining / old) * period + ((remaining % old) * period + old - 1) / old;
-    if (m->sequence_due != NO_EVENT) m->sequence_due = m->now + remaining;
-    else m->sequence_wait = remaining;
+    if (m->sequence_due != NO_EVENT)
+        m->sequence_due = m->now + remaining;
+    else
+        m->sequence_wait = remaining;
     m->sequence_period = period;
     configure_timer(m, 1, 0);
 }
@@ -138,8 +154,10 @@ static void sequence_reset(Ma3 *m)
        reset rebases it at the current time. Clearing the FIFO discards it. */
     if (m->delayed.phase == PACKET_ADDRESS && !m->delayed.parts) {
         uint64_t delay = m->delayed.delay * m->sequence_period;
-        if (m->parameter_ram[0x161] & 1u) m->sequence_due = m->now + delay;
-        else m->sequence_wait = delay;
+        if (m->parameter_ram[0x161] & 1u)
+            m->sequence_due = m->now + delay;
+        else
+            m->sequence_wait = delay;
     }
 }
 
@@ -162,8 +180,10 @@ static void write_parameter(Ma3 *m, unsigned address, unsigned value)
                 ++m->water_faults;
             }
         }
-        if (address >= 0xb0 && address < 0xe0) ++m->unsupported; /* Channel LFO/bend. */
-        else ma3_synth_write(&m->synth, m->parameter_ram, address, value);
+        if (address >= 0xb0 && address < 0xe0)
+            ++m->unsupported; /* Channel LFO/bend. */
+        else
+            ma3_synth_write(&m->synth, m->parameter_ram, address, value);
         ++m->commands;
         return;
     }
@@ -175,34 +195,45 @@ static void write_parameter(Ma3 *m, unsigned address, unsigned value)
         configure_timer(m, 0, 0);
         configure_timer(m, 1, 0);
         break;
-    case 0x154: case 0x155:
+    case 0x154:
+    case 0x155:
         configure_timer(m, 0, address == 0x155 && (value & 2u));
         break;
-    case 0x157: case 0x158:
+    case 0x157:
+    case 0x158:
         configure_timer(m, 1, address == 0x158 && (value & 2u));
         break;
-    case 0x15a: case 0x15b: case 0x15c: case 0x15d:
+    case 0x15a:
+    case 0x15b:
+    case 0x15c:
+    case 0x15d:
         m->irq_flags |= 1u << (address - 0x15a);
         break;
     case 0x15f: /* The low field latches the divider. */
         sequence_set_period(m);
         break;
     case 0x160:
-        if (m->fifo_count > (value & 7u) * 64u) m->irq_flags &= ~FIFO_IRQ;
+        if (m->fifo_count > (value & 7u) * 64u)
+            m->irq_flags &= ~FIFO_IRQ;
         break;
     case 0x161:
         if ((previous ^ value) & 1u) {
             if (value & 1u) {
-                if (m->delayed.phase != PACKET_DELAY) m->sequence_due = m->now + m->sequence_wait;
+                if (m->delayed.phase != PACKET_DELAY)
+                    m->sequence_due = m->now + m->sequence_wait;
             } else {
-                m->sequence_wait = m->sequence_due != NO_EVENT && m->sequence_due > m->now ? m->sequence_due - m->now : 0;
+                m->sequence_wait =
+                    m->sequence_due != NO_EVENT && m->sequence_due > m->now ? m->sequence_due - m->now : 0;
                 m->sequence_due = NO_EVENT;
             }
         }
-        if (value & 2u) sequence_reset(m);
+        if (value & 2u)
+            sequence_reset(m);
         break;
-    case 0x148: case 0x166: /* NOPs issued by the driver. */
-    case 0x15e: case 0x162:
+    case 0x148:
+    case 0x166: /* NOPs issued by the driver. */
+    case 0x15e:
+    case 0x162:
         break;
     default:
         ++m->unsupported;
@@ -215,7 +246,8 @@ static void write_ram(Ma3 *m, unsigned address, unsigned value)
 {
     if (m->water && address >= MA3_RAM_BASE && address < MA3_RAM_END) {
         unsigned damaged = ma_water_sample_byte(&m->water_rng, &m->water_sample_burst, value);
-        if (damaged != value) ++m->water_faults;
+        if (damaged != value)
+            ++m->water_faults;
         value = damaged;
     }
     ma3_synth_ram(&m->synth, address, (uint8_t)value);
@@ -225,12 +257,15 @@ static void read_parameter(Ma3 *m, const Ma3Packet *p, unsigned buffer)
 {
     unsigned address = p->address;
     unsigned value = 0;
-    if (buffer >= 3) return;
+    if (buffer >= 3)
+        return;
     if (p->full_ram) {
-        if (address >= MA3_RAM_BASE && address < MA3_RAM_END) value = m->synth.ram[address - MA3_RAM_BASE];
+        if (address >= MA3_RAM_BASE && address < MA3_RAM_END)
+            value = m->synth.ram[address - MA3_RAM_BASE];
     } else if (!buffer && address >= 0x14a && address <= 0x151) {
         value = ma3_synth_cursor(&m->synth, address - 0x14a);
-    } else if (address < sizeof(m->parameter_ram)) value = m->parameter_ram[address];
+    } else if (address < sizeof(m->parameter_ram))
+        value = m->parameter_ram[address];
     m->responses[buffer] = (uint8_t)value;
     m->response_ready |= 0x10u << buffer;
     ++m->ram_reads;
@@ -241,8 +276,10 @@ static void read_parameter(Ma3 *m, const Ma3Packet *p, unsigned buffer)
 static int field_byte(Ma3 *m, Ma3Packet *p, uint32_t *field, unsigned limit, unsigned value)
 {
     *field |= (value & 127u) << (7 * p->parts++);
-    if (value & 128u) return 1;
-    if (p->parts < limit) return 0;
+    if (value & 128u)
+        return 1;
+    if (p->parts < limit)
+        return 0;
     strcpy(m->error, "Invalid MA-3 packet field");
     return 1;
 }
@@ -254,7 +291,8 @@ static int packet_byte(Ma3 *m, Ma3Packet *p, unsigned mode, unsigned value)
         if (field_byte(m, p, &p->delay, 4, value)) {
             p->parts = 0;
             p->phase = PACKET_ADDRESS;
-            if (mode == SEQUENCED_WRITE) m->sequence_due = m->now + p->delay * m->sequence_period;
+            if (mode == SEQUENCED_WRITE)
+                m->sequence_due = m->now + p->delay * m->sequence_period;
         }
         break;
     case PACKET_ADDRESS:
@@ -271,11 +309,13 @@ static int packet_byte(Ma3 *m, Ma3Packet *p, unsigned mode, unsigned value)
         }
         break;
     case PACKET_RAM:
-        if (mode != FRAME_ONLY) write_ram(m, p->address, value);
+        if (mode != FRAME_ONLY)
+            write_ram(m, p->address, value);
         ++p->address;
         return --p->length == 0;
     case PACKET_PARAMETERS:
-        if (mode != FRAME_ONLY) write_parameter(m, p->address, value);
+        if (mode != FRAME_ONLY)
+            write_parameter(m, p->address, value);
         ++p->address;
         return (value & 128u) != 0;
     case PACKET_READ:
@@ -289,7 +329,8 @@ static void run_fifo(Ma3 *m)
 {
     while (m->fifo_count && (m->parameter_ram[0x161] & 1u) && !*m->error) {
         unsigned value;
-        if (m->sequence_due != NO_EVENT && m->sequence_due > m->now) break;
+        if (m->sequence_due != NO_EVENT && m->sequence_due > m->now)
+            break;
         m->sequence_due = NO_EVENT;
         value = m->fifo[m->fifo_head];
         m->fifo_head = (m->fifo_head + 1) % MA3_FIFO_BYTES;
@@ -307,7 +348,8 @@ static void write_fifo(Ma3 *m, unsigned value)
     }
     m->fifo[(m->fifo_head + m->fifo_count) % MA3_FIFO_BYTES] = (uint8_t)value;
     ++m->fifo_count;
-    if (m->fifo_count > (m->parameter_ram[0x160] & 7u) * 64u) m->irq_flags &= ~FIFO_IRQ;
+    if (m->fifo_count > (m->parameter_ram[0x160] & 7u) * 64u)
+        m->irq_flags &= ~FIFO_IRQ;
     /* Track incomplete writes for the clear pulse (also while stopped). */
     if (packet_byte(m, &m->fifo_input, FRAME_ONLY, value))
         memset(&m->fifo_input, 0, sizeof(m->fifo_input));
@@ -322,7 +364,8 @@ static void render_to(Ma3 *m, uint64_t ns, uint64_t end_frame)
 {
     uint64_t frames;
     m->now = ns;
-    if (end_frame <= m->rendered_frames) return;
+    if (end_frame <= m->rendered_frames)
+        return;
     frames = end_frame - m->rendered_frames;
     m->rendered_frames = end_frame;
     /* A muted frontend still has a running chip. In particular, PCM voice
@@ -343,12 +386,14 @@ static void render_to(Ma3 *m, uint64_t ns, uint64_t end_frame)
             int16_t interleaved[(AUDIO_BLOCK + 8) * 2];
             int16_t *l = left, *r = right;
             if (m->detune.enabled) {
-                count = ma_detune_pcm(&m->detune, left, right, count, detuned_left, detuned_right, AUDIO_BLOCK + 8);
+                count = ma_detune_pcm(&m->detune, left, right, count, detuned_left, detuned_right,
+                                      AUDIO_BLOCK + 8);
                 l = detuned_left;
                 r = detuned_right;
             }
             ma_water_pcm(&m->water_pcm, l, r, count);
-            if (m->mixer) m->mixer(m->mixer_context, l, r, count);
+            if (m->mixer)
+                m->mixer(m->mixer_context, l, r, count);
             for (i = 0; i < count; ++i) {
                 interleaved[i * 2] = l[i];
                 interleaved[i * 2 + 1] = r[i];
@@ -360,8 +405,10 @@ static void render_to(Ma3 *m, uint64_t ns, uint64_t end_frame)
             for (i = 0; i < count; ++i) {
                 int a = l[i], b = r[i];
                 unsigned peak = (unsigned)(a < 0 ? -a : a), other = (unsigned)(b < 0 ? -b : b);
-                if (other > peak) peak = other;
-                if (peak > m->stats.peak) m->stats.peak = peak;
+                if (other > peak)
+                    peak = other;
+                if (peak > m->stats.peak)
+                    m->stats.peak = peak;
                 m->stats.nonzero += (unsigned)(a != 0) + (unsigned)(b != 0);
             }
         }
@@ -372,11 +419,13 @@ static void render_to(Ma3 *m, uint64_t ns, uint64_t end_frame)
 void ma3_advance(Ma3 *m, uint64_t ticks)
 {
     uint64_t ns, due;
-    if (!m->attached || *m->error) return;
+    if (!m->attached || *m->error)
+        return;
     ns = ticks;
     if (m->ticks_hz != NS_PER_SECOND)
         ns = (ticks / m->ticks_hz) * NS_PER_SECOND + (ticks % m->ticks_hz) * NS_PER_SECOND / m->ticks_hz;
-    if (ns < m->now) return;
+    if (ns < m->now)
+        return;
     while ((due = device_deadline(m)) <= ns && due != NO_EVENT) {
         unsigned i;
         render_to(m, due, frames_at(due, 1000000000));
@@ -387,7 +436,8 @@ void ma3_advance(Ma3 *m, uint64_t ticks)
                 timer->due += timer->period;
             }
         }
-        if (fifo_deadline(m) == due) m->irq_flags |= FIFO_IRQ;
+        if (fifo_deadline(m) == due)
+            m->irq_flags |= FIFO_IRQ;
         if (m->water && m->water_next == due) {
             uint32_t random = ma_water_random(&m->water_rng);
             m->water_scale = 25 + random % 301;
@@ -397,7 +447,8 @@ void ma3_advance(Ma3 *m, uint64_t ticks)
         }
         run_fifo(m);
         signal_irq(m);
-        if (*m->error) break;
+        if (*m->error)
+            break;
     }
     /* Convert straight from the guest clock here; rounding to nanoseconds
        first loses a frame at some exact sample boundaries on legacy clocks. */
@@ -408,17 +459,22 @@ void ma3_advance(Ma3 *m, uint64_t ticks)
 static int response_buffer(unsigned selector)
 {
     switch (selector & 0x7fu) {
-    case 0x11: return 0;
-    case 0x22: return 1;
-    case 0x43: return 2;
-    default: return -1;
+    case 0x11:
+        return 0;
+    case 0x22:
+        return 1;
+    case 0x43:
+        return 2;
+    default:
+        return -1;
     }
 }
 
 static void trace_port(Ma3 *m, char direction, unsigned off, unsigned value)
 {
-    if (m->trace) fprintf(m->trace, "%llu %08x %c %u %02x sel=%02x\n",
-        (unsigned long long)m->bus->ticks, m->bus->pc, direction, off, value, m->selector);
+    if (m->trace)
+        fprintf(m->trace, "%llu %08x %c %u %02x sel=%02x\n", (unsigned long long)m->bus->ticks, m->bus->pc,
+                direction, off, value, m->selector);
 }
 
 static uint32_t read_ma3(void *context, uint32_t off, unsigned width)
@@ -434,14 +490,19 @@ static uint32_t read_ma3(void *context, uint32_t off, unsigned width)
     ++m->reads;
     if (!off) {
         result = 1u | m->response_ready | (m->control & 0x80u);
-        if (m->fifo_count == 0) result |= 2u;
-        if (m->fifo_count == MA3_FIFO_BYTES) result |= 8u;
+        if (m->fifo_count == 0)
+            result |= 2u;
+        if (m->fifo_count == MA3_FIFO_BYTES)
+            result |= 8u;
     } else if (response >= 0) {
         result = m->responses[response];
         m->response_ready &= ~(0x10u << response);
-    } else if (reg == 0 && m->bank == 0) result = irq_status(m);
-    else if (reg == 4) result = m->control;
-    else result = m->registers[m->bank][reg];
+    } else if (reg == 0 && m->bank == 0)
+        result = irq_status(m);
+    else if (reg == 4)
+        result = m->control;
+    else
+        result = m->registers[m->bank][reg];
     trace_port(m, 'R', off, result);
     return result;
 }
@@ -468,28 +529,34 @@ static void write_ma3(void *context, uint32_t off, unsigned width, uint32_t valu
             ++m->fifo_bytes;
             write_fifo(m, value);
         } else if ((reg == 2 || reg == 3) && !*m->error) {
-            if (reg == 2) ++m->fifo_bytes;
+            if (reg == 2)
+                ++m->fifo_bytes;
             if (packet_byte(m, &m->immediate, reg == 2 ? IMMEDIATE_WRITE : READ_REQUEST, value)) {
                 memset(&m->immediate, 0, sizeof(m->immediate));
                 m->immediate.phase = PACKET_ADDRESS;
             }
         } else if (reg == 4) {
             unsigned rising = value & ~m->control;
-            if (rising & 0x80u) reset_chip(m);
+            if (rising & 0x80u)
+                reset_chip(m);
             if (rising & 0x20u) {
                 ++m->fifo_clears;
-                if (m->fifo_input.phase != PACKET_DELAY || m->fifo_input.parts) ++m->partial_drops;
+                if (m->fifo_input.phase != PACKET_DELAY || m->fifo_input.parts)
+                    ++m->partial_drops;
                 clear_fifo(m);
             }
-            if (rising & 8u) sequence_reset(m);
+            if (rising & 8u)
+                sequence_reset(m);
             m->control = value;
             m->bank = value & 3u;
         } else if (reg == 0 && m->bank == 0) {
             m->irq_flags &= ~value;
-            if (value & FIFO_IRQ) m->fifo_due = m->now + FIFO_SERVICE_NS;
+            if (value & FIFO_IRQ)
+                m->fifo_due = m->now + FIFO_SERVICE_NS;
         } else {
             m->registers[m->bank][reg] = (uint8_t)value;
-            if (reg == 7 && m->bank == 0) m->synth.volume = value & 31u;
+            if (reg == 7 && m->bank == 0)
+                m->synth.volume = value & 31u;
         }
     }
     /* Starting, or appending to an already running FIFO, applies due
@@ -500,9 +567,16 @@ static void write_ma3(void *context, uint32_t off, unsigned width, uint32_t valu
     trace_port(m, 'W', off, value);
 }
 
+int ma3_motor_on(const Ma3 *m)
+{
+    /* XEDK1's direct motor control toggles bit 0 in bank 0 register 0D. */
+    return m->attached && (m->registers[0][0x0d] & 1u);
+}
+
 int ma3_attach(Ma3 *m, Bus *bus, Intc *intc, uint32_t base, uint32_t irq_mask, uint32_t sequence_quantum_ns)
 {
-    if (m->attached || !intc->attached || (base & 3u) || !irq_mask || !sequence_quantum_ns || sequence_quantum_ns > 10000)
+    if (m->attached || !intc->attached || (base & 3u) || !irq_mask || !sequence_quantum_ns ||
+        sequence_quantum_ns > 10000)
         return 0;
     memset(m, 0, sizeof(*m));
     m->bus = bus;
@@ -510,7 +584,8 @@ int ma3_attach(Ma3 *m, Bus *bus, Intc *intc, uint32_t base, uint32_t irq_mask, u
     m->base = base;
     m->irq_mask = irq_mask;
     m->sequence_quantum_ns = sequence_quantum_ns;
-    if (!bus_device(bus, base, 8, read_ma3, write_ma3, m)) return 0;
+    if (!bus_device(bus, base, 8, read_ma3, write_ma3, m))
+        return 0;
     m->attached = 1;
     ma3_synth_init(&m->synth);
     reset_chip(m);
@@ -520,9 +595,24 @@ int ma3_attach(Ma3 *m, Bus *bus, Intc *intc, uint32_t base, uint32_t irq_mask, u
 
 void ma3_set_clock(Ma3 *m, const uint64_t *ticks, uint32_t ticks_hz)
 {
-    if (!m->attached || !ticks || ticks_hz < AUDIO_RATE || ticks_hz > NS_PER_SECOND) return;
+    if (!m->attached || !ticks || ticks_hz < AUDIO_RATE || ticks_hz > NS_PER_SECOND)
+        return;
     m->clock = ticks;
     m->ticks_hz = ticks_hz;
+    update_deadline(m);
+}
+
+void ma3_cold_reset(Ma3 *m)
+{
+    if (!m->attached)
+        return;
+    /* Rebase audio at power-on without rendering the time spent powered off. */
+    m->now = *m->clock;
+    m->rendered_frames = frames_at(*m->clock, m->ticks_hz);
+    *m->error = 0;
+    reset_chip(m);
+    if (m->water)
+        m->water_next = m->now + 25000000;
     update_deadline(m);
 }
 
@@ -547,13 +637,15 @@ int ma3_open_audio(Ma3 *m, int speakers, const char *wav)
 int ma3_close_audio(Ma3 *m)
 {
     int ok;
-    if (!m->output) return 1;
+    if (!m->output)
+        return 1;
     ma3_advance(m, *m->clock);
     m->stats.underruns = audio_output_underruns(m->output);
     ok = audio_output_close(m->output);
     m->output = NULL;
     m->stats.failed |= !ok;
-    if (!ok && !*m->output_error) strcpy(m->output_error, "Could not finish MA-3 audio output");
+    if (!ok && !*m->output_error)
+        strcpy(m->output_error, "Could not finish MA-3 audio output");
     update_deadline(m);
     return ok;
 }
@@ -566,14 +658,17 @@ void ma3_set_mixer(Ma3 *m, Ma3Mixer mixer, void *context)
 
 void ma3_set_detune(Ma3 *m, int enabled)
 {
-    if (m->attached) ma3_advance(m, *m->clock);
+    if (m->attached)
+        ma3_advance(m, *m->clock);
     ma_detune_set(&m->detune, enabled);
 }
 
 void ma3_set_water(Ma3 *m, int enabled)
 {
-    if (m->water == !!enabled) return;
-    if (m->attached) ma3_advance(m, *m->clock);
+    if (m->water == !!enabled)
+        return;
+    if (m->attached)
+        ma3_advance(m, *m->clock);
     m->water = !!enabled;
     m->water_scale = 100;
     m->water_next = m->now;
@@ -588,13 +683,15 @@ void ma3_set_water(Ma3 *m, int enabled)
 Ma3Stats ma3_stats(const Ma3 *m)
 {
     Ma3Stats stats = m->stats;
-    if (m->output) stats.underruns = audio_output_underruns(m->output);
+    if (m->output)
+        stats.underruns = audio_output_underruns(m->output);
     return stats;
 }
 
 void ma3_destroy(Ma3 *m)
 {
     ma3_close_audio(m);
-    if (m->trace) fclose(m->trace);
+    if (m->trace)
+        fclose(m->trace);
     memset(m, 0, sizeof(*m));
 }

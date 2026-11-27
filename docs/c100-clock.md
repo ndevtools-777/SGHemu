@@ -72,6 +72,41 @@ that does not establish real-handset tempo or fix the reported game/selection sp
 The recovered `RTXCISRMultiFrameTick` also contains a 13-frame dithering counter;
 that is OS timer bookkeeping, not proof of a CPU divider or PLL reference.
 
+## Standalone timers, sleep and RTC alarm
+
+The standalone profile maps 26-bit Timer 1 at `0x00041300` (IRQ 0) and Timer 2
+at `0x00041400` (IRQ 1). They count down with separate period and count loads;
+the control register at `+0x0C` selects stop, IRQ enable, split-half loading and
+clock source. Interval timing uses the 3.9 MHz reference by default. Timer 2 can
+instead count ARM cycles and is gated by clock-control bit 5. The physical Timer
+1 rate at loader handoff, the SIM ETU/external timer inputs, and the width of the
+Timer 2 pulse on A7 remain unverified.
+
+In standalone profiles, `0x00040902` bit 2 requests sleep. The CPU's instruction
+and core-cycle counters stop while emulated time advances. An enabled pending
+IRQ or FIQ wakes the CPU; ARM CPSR masks then decide whether it takes an
+exception. The low-power comparator at `0x00040700` uses 32,768 Hz independently
+of the ARM clock and raises IRQ 25. Stock XEDK1 `HWSleep` programs that comparator,
+and `HWServiceWAKEUP` restores PLL mode 2. The stock profiles retain their
+existing IRQ-gate model at `0x00040902`.
+
+The RTC at `0x00040080` compares minute through year at `+0x12..+0x1A` and
+latches IRQ 2 on a match. XEDK1 disables the alarm by writing `FFFF` to the
+minute compare; INTC pending is cleared by writing one at `0x00040100`.
+`RTCServiceAlarm` also writes `1,1,2` to `+0x1C`, documented as external interrupt
+control. The C100 schematics connect the [CX805 `ALARM` output (U300 C13)][cpu-sch]
+to [CX20524 `ALARM_IN` (U200 J13)][pmu-sch]. The [CX20524-12 datasheet][pmu-spec]
+specifies that pulling this input low initiates power-up. SGHemu uses the
+comparator match to power on from Standby; `+0x1C` is retained as a latch while
+its bit meanings and output timing remain unverified. The storage words at
+`0x000400A0..0x000400BE` and the clock survive sleep and Standby in the same
+session. The CLI can advance Standby with `--rtc-off-ms N` or inject a wake
+input with `--wake-with power|charger` after the guest powers off.
+
+`make check` exercises both timer clock domains, timed UART TX, ARM exceptions,
+and comparator/RTC wake with single steps and batches. These regressions verify
+guest-visible scheduling in SGHemu. They do not calibrate a handset.
+
 ## Reproduction
 
 Use the existing `C100Nvm.java` Ghidra helper with the XEDK1 linker listing
@@ -80,3 +115,7 @@ and select `GetARMClockFrequency`, `GetDSPClockFrequency`, `PLLSetMode`,
 Select the `ds_SetPLLFrequency*` functions separately to inspect revision
 encodings. The original ROMs, raw decompilation, probe and logs remain ignored
 local artifacts under `models/c100/roms/` and `build/`.
+
+[cpu-sch]: https://github.com/Krasutski/SamsungC100_firmware_handmade/blob/b87b59a/doc/sch/shem_cx80501-30.pdf
+[pmu-sch]: https://github.com/Krasutski/SamsungC100_firmware_handmade/blob/b87b59a/doc/sch/shem_cx20524-12.pdf
+[pmu-spec]: https://github.com/Krasutski/SamsungC100_firmware_handmade/blob/b87b59a/doc/datasheets/CX20524-12.pdf

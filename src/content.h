@@ -11,14 +11,15 @@
    the guest's own search, and hands the file to the guest writer. The guest
    builds every stored byte; the host supplies only the name and the contents. */
 #define CONTENT_NAME_MAX 12
+
 typedef struct {
     int active, stage, done, failed;
-    uint32_t trigger, alloc, search, write; /* Guest entries the model declared. */
+    uint32_t trigger, alloc, search, write;      /* Guest entries the model declared. */
     uint32_t base, data, name_ptr, scratch, out; /* Carved from one allocation. */
     uint32_t stack; /* Borrowed from the guest task stack for stacked call arguments. */
     uint32_t size;
     unsigned type; /* 6 sound writer, 7 bitmap writer, 10 native Java installer. */
-    char *jad; /* Java descriptor; separate guest allocation, freed by firmware. */
+    char *jad;     /* Java descriptor; separate guest allocation, freed by firmware. */
     uint32_t jad_ptr, url_ptr;
     unsigned attempt;
     char stem[CONTENT_NAME_MAX]; /* Sanitized file name before any collision suffix. */
@@ -27,18 +28,19 @@ typedef struct {
     Arm7 caller;
     char error[160];
 } ContentImport;
+
 typedef int (*ContentPictureDecoder)(ContentImport *import);
 /* A frontend may supply its own decoder. The guest container and import
    path are the same as for the built-in host decoder. */
 int content_import_open_decoded(ContentImport *im, Machine *m, const char *path,
-    ContentPictureDecoder decode);
-int content_picture_rgb(ContentImport *im, unsigned width, unsigned height,
-    const uint8_t *rgb, size_t stride);
+                                ContentPictureDecoder decode);
+int content_picture_rgb(ContentImport *im, unsigned width, unsigned height, const uint8_t *rgb,
+                        size_t stride);
 /* Read `path` and take the guest entries from the model. Returns 0 with a
    message in im->error when the model cannot import or the file is unusable. */
 int content_import_open(ContentImport *im, Machine *m, const char *path);
 /* Arm a fresh-boot launch of the firmware's native installed-MIDlet menu. */
-int content_java_menu(ContentImport *im,Machine *m);
+int content_java_menu(ContentImport *im, Machine *m);
 void content_import_release(ContentImport *im);
 /* Run the multi-call guest sequence. Call once per instruction, before
    machine_step. Returns 1 to continue, 0 on failure, or 2 once the guest writer

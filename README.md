@@ -20,12 +20,13 @@ Windows 7 API/subsystem target; actual execution on Windows 7 is untested.
 
 ## Phone output and appearance
 
-The native status bar shows **Running / Paused / Stopped** and emulation speed.
+The status bar shows **Standby / Running / Paused / Stopped** and emulation speed.
 **100% means real-time speed**, measured from emulated time versus wall time;
 the display averages actual progress over about two seconds and reads zero while paused.
 
 C100 navigation/key tones come from CPU/DSP emulation and are mixed with MA-3
-audio when enabled. The program icon shows the native RGB service-LED color.
+audio when enabled. The program icon shows the native RGB service-LED color;
+Qt also shows it in the status bar.
 **L&F -> LCD ghosting** toggles a saved LCD response effect;
 it does not alter guest pixels or screenshots. See
 [implementation and verification](docs/c100-phone-output.md).
@@ -45,6 +46,9 @@ saved phone data, packet addresses or packet lengths are corrupted.
 
 **File -> Logging** toggles `build/gui-unmapped.log`,
 `build/gui-ma3-traffic.log` and `build/gui-profile.log` while running, without resetting the phone.
+It also appends raw TX bytes for mapped serial ports to `build/gui-debug-uart.bin`
+and `build/gui-sds-uart.bin`. Diagnostics show the last vectored ARM fault and,
+for timed UARTs, the clock gate, GPIO route, divisor and bytes sent at the pin.
 Logging is off by default, saved under `[diagnostics] logging` in
 `state/emulator.ini`, and appends across toggles/resets. The old audio-only
 `[audio] trace` setting no longer enables GUI logging. Performance profiling is
@@ -135,10 +139,11 @@ make gui
 ```
 
 In **File > Open firmware folder (Ctrl+O)**, select the folder containing both
-ROM files. A recognized pair boots automatically; if several match, choose a
-version. **Open model config** loads a `.cfg`; the two advanced ROM actions can
-override its first and second images. These actions leave the phone stopped;
-press **Run (F5)** to start it. **Pause (F6)**
+ROM files. If several pairs match, choose a version. The phone starts in
+**Standby**; hold **End / Power (F4)** through startup. **Open model config** loads a
+`.cfg`; the two advanced ROM actions can override its first and second images.
+RAM-loaded and basic diagnostic profiles start stopped; press **Run (F5)**.
+**Pause (F6)**
 keeps the current LCD frame, **Stop / Reset (Ctrl+R)** cold-resets the phone and
 leaves it stopped, and **Step instruction (F10)** advances a paused machine.
 Use the on-screen keypad, or arrows, Enter/Space, F1–F4 (soft keys, Call/End),
@@ -160,9 +165,9 @@ firmware. See each release's notes for its audio requirements.
 
 In the Windows GUI use **File > Open firmware folder (Ctrl+O)**. Pick the folder containing
 both firmware files, or a parent folder containing several sets. Exact SHA-256
-hashes identify the model/version even when files have been renamed. A complete
-match boots automatically; multiple matches offer a version selection. No guessed
-mapping is used for unknown firmware. `.lst` files alone cannot boot.
+hashes identify the model/version even when files have been renamed. A recognized
+pair starts in **Standby**; multiple matches offer a version selection. Hold
+**End / Power (F4)** through startup. `.lst` files alone cannot boot.
 
 The native window contains only the LCD, native keypad buttons beneath it, and
 the top menu. F5 runs, F6 pauses, F10 steps, Ctrl+R resets (paused). State and
@@ -183,7 +188,7 @@ hashes and memory map. Valid legacy `state/` saves migrate automatically without
 No manual Save command is needed. First boot takes
 longer while the guest formats storage, then resets and boots normally.
 File > Import NVM snapshot and reset remains for importing existing `.snv`
-files; press F5 afterward. ROM files are never modified.
+files. Use **Power** from Standby or **F5** from Stopped. ROM files are never modified.
 
 Firmware belongs in model-specific, ignored folders:
 
@@ -313,14 +318,19 @@ GSM, Java UDP, WTLS or a full HTML browser. See
 [Java networking](docs/java-network.md) and
 [cellular and SIM details](docs/c100-cellular.md).
 
-The GUI remembers the last successfully opened firmware/model and automatically
-loads and runs it on subsequent launches. **Emulation -> Battery** offers
+The GUI reopens the last firmware in **Standby** if the profile supports a
+cold boot. In Standby, CPU, LCD and UART TX are off while the RTC advances.
+Power, charger insertion or a programmed RTC alarm cold-boots with saved NVM
+and the session's SIM, clock and host settings. Pressing Power feeds the board
+immediately; releasing before the firmware sets HOLD returns it to Standby.
+The firmware controls the LCD and its backlight. **Emulation -> Battery** offers
 an editable 0-100% level and a charging-cable toggle, persisted in
 `state/emulator.ini`. These drive ADC/GPIO inputs on XEDA2/XEDD1/XEDK1; the phone
-samples and filters them, so its battery bars update later. Reset with the cable
-connected to see the charging screen. At 100%, charger completion after a
-20-emulated-second settling delay lets the firmware hatch the egg. The voltage
-curve and charger delay are provisional; see [battery details](docs/c100-battery.md).
+samples and filters them, so its battery bars update later. Connect the cable
+from Standby or shut down with the cable attached to see the charging screen.
+At 100%, the charger signals completion after 20 emulated seconds, so the
+firmware can hatch the egg. The voltage curve and charger delay are provisional;
+see [battery details](docs/c100-battery.md).
 See [content import details](docs/c100-content-import.md).
 
 CLI Java examples (use your own game file):

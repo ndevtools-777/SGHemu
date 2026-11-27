@@ -38,27 +38,30 @@ extern "C" {
 static const struct {
     const char *label;
     int hostKey;
-} phoneKeys[] = {
-    {"Soft left", Qt::Key_F1}, {"Up", Qt::Key_Up}, {"Soft right", Qt::Key_F2},
-    {"Left", Qt::Key_Left}, {"OK", Qt::Key_Return}, {"Right", Qt::Key_Right},
-    {"Call", Qt::Key_F3}, {"Down", Qt::Key_Down}, {"End", Qt::Key_F4},
-    {"1", Qt::Key_1}, {"2", Qt::Key_2}, {"3", Qt::Key_3},
-    {"4", Qt::Key_4}, {"5", Qt::Key_5}, {"6", Qt::Key_6},
-    {"7", Qt::Key_7}, {"8", Qt::Key_8}, {"9", Qt::Key_9},
-    {"*", Qt::Key_Asterisk}, {"0", Qt::Key_0}, {"#", Qt::Key_NumberSign},
-    {"C / Back", Qt::Key_Backspace}
-};
+} phoneKeys[] = {{"Soft left", Qt::Key_F1},  {"Up", Qt::Key_Up},
+                 {"Soft right", Qt::Key_F2}, {"Left", Qt::Key_Left},
+                 {"OK", Qt::Key_Return},     {"Right", Qt::Key_Right},
+                 {"Call", Qt::Key_F3},       {"Down", Qt::Key_Down},
+                 {"End / Power", Qt::Key_F4}, {"1", Qt::Key_1},
+                 {"2", Qt::Key_2},           {"3", Qt::Key_3},
+                 {"4", Qt::Key_4},           {"5", Qt::Key_5},
+                 {"6", Qt::Key_6},           {"7", Qt::Key_7},
+                 {"8", Qt::Key_8},           {"9", Qt::Key_9},
+                 {"*", Qt::Key_Asterisk},    {"0", Qt::Key_0},
+                 {"#", Qt::Key_NumberSign},  {"C / Back", Qt::Key_Backspace}};
+
 static_assert(sizeof(phoneKeys) / sizeof(phoneKeys[0]) == SGH_MAX_KEYS);
 
 /* An executable under build/linux/ can also be started from a file manager. */
 static QString modelsDirectory()
 {
     const QDir executable(QApplication::applicationDirPath());
-    const QStringList locations = {QDir::currentPath(), executable.absolutePath(),
-                                   executable.filePath(".."), executable.filePath("../..")};
+    const QStringList locations = {QDir::currentPath(), executable.absolutePath(), executable.filePath(".."),
+                                   executable.filePath("../..")};
     for (const QString &location : locations) {
         const QString models = QDir(location).absoluteFilePath("models");
-        if (QFileInfo(models).isDir()) return models;
+        if (QFileInfo(models).isDir())
+            return models;
     }
     return {};
 }
@@ -72,7 +75,7 @@ static quint32 keyIdentity(const QKeyEvent *event)
 }
 
 class LcdView final : public QWidget {
-public:
+  public:
     LcdView(const Machine &machine, QWidget *parent) : QWidget(parent), machine_(machine)
     {
         setAccessibleName("Phone LCD");
@@ -93,7 +96,8 @@ public:
     {
         if (enabled && pattern_.isNull()) {
             pattern_ = QImage(target_.size(), QImage::Format_RGB32);
-            if (pattern_.isNull()) return;
+            if (pattern_.isNull())
+                return;
             Machine test{};
             test.width = machine_.width;
             test.height = machine_.height;
@@ -105,7 +109,8 @@ public:
                     line[column] |= 0xff000000u;
             }
         }
-        if (!enabled) pattern_ = {};
+        if (!enabled)
+            pattern_ = {};
         update();
     }
 
@@ -119,21 +124,31 @@ public:
        drawing never stops. The paint event only sees complete snapshots. */
     void capture(bool force = false)
     {
-        if (!machine_.pixels) return;
+        if (!machine_.pixels)
+            return;
+        constexpr uint64_t settleNs = 3000000;
+        constexpr uint64_t maxWaitNs = 33333333;
         const uint64_t now = machine_.clock.nanoseconds;
-        if (writes_ != machine_.lcd.writes || commands_ != machine_.lcd.commands) {
+        if (writes_ != machine_.lcd.writes || commands_ != machine_.lcd.commands ||
+            powerChanges_ != machine_.lcd.power_changes) {
             writes_ = machine_.lcd.writes;
             commands_ = machine_.lcd.commands;
-            if (!pending_) firstChange_ = now;
+            powerChanges_ = machine_.lcd.power_changes;
+            if (!pending_)
+                firstChange_ = now;
             lastChange_ = now;
             pending_ = true;
         }
-        if (!force && machine_.clock.attached &&
-            (!pending_ || (now - lastChange_ < 3000000 && now - firstChange_ < 33333333)))
-            return;
+        if (!force && machine_.clock.attached) {
+            const bool waitingForRedraw = now - lastChange_ < settleNs && now - firstChange_ < maxWaitNs;
+            if (!pending_ || waitingForRedraw)
+                return;
+        }
 
-        if (target_.isNull()) target_ = QImage(machine_.width, machine_.height, QImage::Format_RGB32);
-        if (target_.isNull()) return;
+        if (target_.isNull())
+            target_ = QImage(machine_.width, machine_.height, QImage::Format_RGB32);
+        if (target_.isNull())
+            return;
         for (int row = 0; row < target_.height(); ++row) {
             const uint32_t *pixels = machine_.pixels + row * machine_.width;
             auto *line = reinterpret_cast<QRgb *>(target_.scanLine(row));
@@ -141,14 +156,20 @@ public:
                 line[column] = 0xff000000u | pixels[column];
         }
         pending_ = false;
-        if (!ghosting_ && pattern_.isNull()) update();
+        if (machine_powered_off(&machine_)) {
+            display_ = target_;
+            update();
+        } else if (!ghosting_ && pattern_.isNull())
+            update();
     }
 
     void blend()
     {
         const QImage &target = pattern_.isNull() ? target_ : pattern_;
-        if (!ghosting_ || target.isNull()) return;
-        if (display_.size() != target.size()) resetBlend();
+        if (machine_powered_off(&machine_) || !ghosting_ || target.isNull())
+            return;
+        if (display_.size() != target.size())
+            resetBlend();
         const unsigned retain = static_cast<unsigned>(256 * std::exp(-blendClock_.restart() / 75.0));
         for (int row = 0; row < target.height(); ++row) {
             const auto *input = reinterpret_cast<const QRgb *>(target.constScanLine(row));
@@ -158,8 +179,8 @@ public:
                 for (unsigned shift = 0; shift < 24; shift += 8) {
                     const int from = (output[column] >> shift) & 255;
                     const int to = (input[column] >> shift) & 255;
-                    const unsigned value = qAbs(from - to) <= 2 ? to :
-                        (from * retain + to * (256 - retain) + 128) >> 8;
+                    const unsigned value =
+                        qAbs(from - to) <= 2 ? to : (from * retain + to * (256 - retain) + 128) >> 8;
                     color |= value << shift;
                 }
                 output[column] = color;
@@ -168,16 +189,19 @@ public:
         update();
     }
 
-protected:
+  protected:
     void paintEvent(QPaintEvent *) override
     {
-        const QImage &frame = ghosting_ ? display_ : pattern_.isNull() ? target_ : pattern_;
+        const QImage &target = pattern_.isNull() ? target_ : pattern_;
+        const QImage &frame = ghosting_ ? display_ : target;
         QPainter painter(this);
-        if (frame.isNull()) painter.fillRect(rect(), Qt::black);
-        else painter.drawImage(rect(), frame); /* Integer zoom, nearest neighbor. */
+        if (machine_powered_off(&machine_) || frame.isNull())
+            painter.fillRect(rect(), Qt::black);
+        else
+            painter.drawImage(rect(), frame); /* Integer zoom, nearest neighbor. */
     }
 
-private:
+  private:
     void resetBlend()
     {
         display_ = pattern_.isNull() ? target_ : pattern_;
@@ -188,12 +212,13 @@ private:
     const Machine &machine_;
     QImage target_, display_, pattern_;
     QElapsedTimer blendClock_;
-    uint64_t writes_ = 0, commands_ = 0, firstChange_ = 0, lastChange_ = 0;
+    uint64_t writes_ = 0, commands_ = 0, powerChanges_ = 0, firstChange_ = 0, lastChange_ = 0;
     bool pending_ = false, ghosting_ = false;
 };
 
-PhoneWindow::PhoneWindow() : settings_("state/emulator.ini", QSettings::IniFormat),
-                             audioSettings_("state/audio.ini", QSettings::IniFormat)
+PhoneWindow::PhoneWindow()
+    : settings_("state/emulator.ini", QSettings::IniFormat),
+      audioSettings_("state/audio.ini", QSettings::IniFormat)
 {
     setWindowTitle("SGHemu");
     setFocusPolicy(Qt::StrongFocus);
@@ -210,10 +235,12 @@ PhoneWindow::PhoneWindow() : settings_("state/emulator.ini", QSettings::IniForma
     cellEnabled_ = settings_.value("cellular/enabled", true).toBool();
     networkName_ = settings_.value("cellular/network", "Tele2").toString();
     gsmMode_ = settings_.value("cellular/gsm_mode", 0).toUInt();
-    if (gsmMode_ > 2) gsmMode_ = 0;
+    if (gsmMode_ > 2)
+        gsmMode_ = 0;
     audioEnabled_ = audioSettings_.value("audio/enabled", true).toBool();
     audioTicks_ = audioSettings_.value("audio/ticks_hz", MA3_DEFAULT_TICKS_HZ).toUInt();
-    if (audioTicks_ < 48000 || audioTicks_ > 100000000) audioTicks_ = MA3_DEFAULT_TICKS_HZ;
+    if (audioTicks_ < 48000 || audioTicks_ > 100000000)
+        audioTicks_ = MA3_DEFAULT_TICKS_HZ;
 
     auto *file = menuBar()->addMenu("&File");
     file->addAction("Open &firmware folder...", this, &PhoneWindow::openFirmwareFolder, QKeySequence::Open);
@@ -225,21 +252,28 @@ PhoneWindow::PhoneWindow() : settings_("state/emulator.ini", QSettings::IniForma
 
     auto *emulation = menuBar()->addMenu("&Emulation");
     run_ = emulation->addAction("&Run", this, [this] { setState(State::Running); }, Qt::Key_F5);
-    pause_ = emulation->addAction("&Pause", this, [this] {
-        setState(State::Paused);
-        saveStorage();
-    }, Qt::Key_F6);
-    step_ = emulation->addAction("Step &instruction", this, [this] {
-        if (emulate(1, State::Paused)) {
-            setState(State::Paused, "Paused - stepped");
+    pause_ = emulation->addAction(
+        "&Pause", this,
+        [this] {
+            setState(State::Paused);
             saveStorage();
-        }
-    }, Qt::Key_F10);
+        },
+        Qt::Key_F6);
+    step_ = emulation->addAction(
+        "Step &instruction", this,
+        [this] {
+            if (emulate(1, State::Paused)) {
+                setState(State::Paused, "Paused - stepped");
+                saveStorage();
+            }
+        },
+        Qt::Key_F10);
     emulation->addSeparator();
     addToolMenus(file, emulation);
-    stop_ = file->addAction("&Stop / Reset", this, [this] {
-        loadFirmware(firmware_, State::Stopped, storage_.defaults_boot != 0);
-    }, QKeySequence("Ctrl+R"));
+    stop_ = file->addAction(
+        "&Stop / Reset", this,
+        [this] { loadFirmware(firmware_, State::Stopped, storage_.defaults_boot != 0); },
+        QKeySequence("Ctrl+R"));
     file->addSeparator();
     file->addAction("&Quit", this, &QWidget::close, QKeySequence::Quit);
 
@@ -288,13 +322,15 @@ PhoneWindow::PhoneWindow() : settings_("state/emulator.ini", QSettings::IniForma
     });
     auto *help = menuBar()->addMenu("&Help");
     help->addAction("&About SGHemu", this, [this] {
-        QMessageBox::about(this, "About SGHemu", "Samsung SGH-C100 emulator workbench (Qt 5)\n\n"
+        QMessageBox::about(
+            this, "About SGHemu",
+            "Samsung SGH-C100 emulator workbench (Qt 5)\n\n"
             "Ctrl+O opens a firmware folder. F5 runs, F6 pauses, F10 steps and Ctrl+R resets.\n"
-            "Use arrows, Enter, digits, * and #, F1/F2 (soft keys), F3/F4 (Call/End) and Backspace (Clear).\n"
+            "Use arrows, Enter, digits, * and #, F1/F2 (soft keys), F3/F4 (Call/End/Power) and Backspace (Clear).\n"
             "Ctrl+T toggles English abc/ABC text input.");
     });
     for (auto *menu : menuBar()->findChildren<QMenu *>())
-        connect(menu, &QMenu::aboutToShow, this, &PhoneWindow::releaseKeys);
+        connect(menu, &QMenu::aboutToShow, this, [this] { releaseKeys(); });
 
     auto *controls = addToolBar("Emulation controls");
     controls->setMovable(false);
@@ -311,7 +347,8 @@ PhoneWindow::PhoneWindow() : settings_("state/emulator.ini", QSettings::IniForma
 
     auto *keypad = new QGridLayout;
     layout->addLayout(keypad);
-    for (int column = 0; column < 3; ++column) keypad->setColumnStretch(column, 1);
+    for (int column = 0; column < 3; ++column)
+        keypad->setColumnStretch(column, 1);
     for (unsigned key = 0; key < SGH_MAX_KEYS; ++key) {
         auto *button = new QPushButton(phoneKeys[key].label, panel);
         buttons_[key] = button;
@@ -336,6 +373,11 @@ PhoneWindow::PhoneWindow() : settings_("state/emulator.ini", QSettings::IniForma
     speedLabel_ = new QLabel;
     speedLabel_->setToolTip("Emulated time / elapsed host time");
     statusBar()->addPermanentWidget(speedLabel_);
+    ledIndicator_ = new QLabel;
+    ledIndicator_->setFixedSize(16, 16);
+    ledIndicator_->setToolTip("Service LED");
+    ledIndicator_->setAccessibleName("Service LED");
+    statusBar()->addPermanentWidget(ledIndicator_);
 
     /* Keep each callback short without adding idle time when audio falls behind. */
     runTimer_.setInterval(4);
@@ -347,7 +389,8 @@ PhoneWindow::PhoneWindow() : settings_("state/emulator.ini", QSettings::IniForma
     fitLcd();
     setState(State::Empty);
 
-    if (settings_.value("diagnostics/logging", false).toBool()) applyLogging(true);
+    if (settings_.value("diagnostics/logging", false).toBool())
+        applyLogging(true);
     QTimer::singleShot(0, this, &PhoneWindow::openRecentFirmware);
 }
 
@@ -363,22 +406,26 @@ void PhoneWindow::openFirmwareFolder()
 {
     const QString models = modelsDirectory();
     if (models.isEmpty()) {
-        QMessageBox::warning(this, "Firmware folder", "Cannot find models/. Run SGHemu from the repository root.");
+        QMessageBox::warning(this, "Firmware folder",
+                             "Cannot find models/. Run SGHemu from the repository root.");
         return;
     }
-    if (runTimer_.isActive()) setState(State::Paused);
+    if (runTimer_.isActive())
+        setState(State::Paused);
     const QString folder = QFileDialog::getExistingDirectory(this, "Open firmware folder");
-    if (folder.isEmpty()) return;
+    if (folder.isEmpty())
+        return;
 
     const QByteArray romFolder = QFile::encodeName(folder);
     const QByteArray modelsRoot = QFile::encodeName(models);
     FirmwareMatch matches[FIRMWARE_MAX_MATCHES];
     QApplication::setOverrideCursor(Qt::WaitCursor);
-    const unsigned count = firmware_scan(romFolder.constData(), modelsRoot.constData(),
-                                         matches, FIRMWARE_MAX_MATCHES);
+    const unsigned count =
+        firmware_scan(romFolder.constData(), modelsRoot.constData(), matches, FIRMWARE_MAX_MATCHES);
     QApplication::restoreOverrideCursor();
     if (!count) {
-        QMessageBox::information(this, "Firmware folder",
+        QMessageBox::information(
+            this, "Firmware folder",
             "No supported ROM pair found. Both files must match a known firmware version.");
         return;
     }
@@ -389,26 +436,30 @@ void PhoneWindow::openFirmwareFolder()
         for (unsigned i = 0; i < count; ++i)
             versions << QString("%1. %2").arg(i + 1).arg(QString::fromUtf8(matches[i].name));
         bool accepted = false;
-        const QString version = QInputDialog::getItem(this, "Select firmware", "Firmware version:",
-                                                      versions, 0, false, &accepted);
-        if (!accepted) return;
+        const QString version = QInputDialog::getItem(this, "Select firmware", "Firmware version:", versions,
+                                                      0, false, &accepted);
+        if (!accepted)
+            return;
         choice = versions.indexOf(version);
     }
     const FirmwareMatch &match = matches[choice];
-    loadFirmware({match.model, match.rom[0], match.rom[1]}, State::Running);
+    loadFirmware({match.model, match.rom[0], match.rom[1]}, State::Standby);
 }
 
 void PhoneWindow::openModel()
 {
-    if (runTimer_.isActive()) setState(State::Paused);
+    if (runTimer_.isActive())
+        setState(State::Paused);
     const QString path = QFileDialog::getOpenFileName(this, "Open model config", modelsDirectory(),
                                                       "SGH model configs (*.cfg);;All files (*)");
-    if (!path.isEmpty()) loadFirmware({QFile::encodeName(path), {}, {}}, State::Stopped);
+    if (!path.isEmpty())
+        loadFirmware({QFile::encodeName(path), {}, {}}, State::Standby);
 }
 
 void PhoneWindow::openRom(bool second)
 {
-    if (runTimer_.isActive()) setState(State::Paused);
+    if (runTimer_.isActive())
+        setState(State::Paused);
     Firmware next = firmware_;
     if (next.model.isEmpty()) {
         const QString models = modelsDirectory();
@@ -419,20 +470,24 @@ void PhoneWindow::openRom(bool second)
         next.model = QFile::encodeName(QDir(models).filePath("c100.cfg"));
     }
     QByteArray &image = second ? next.secondRom : next.firstRom;
-    const QString path = QFileDialog::getOpenFileName(this,
-        second ? "Open second firmware image" : "Open first firmware image", QFile::decodeName(image),
+    const QString path = QFileDialog::getOpenFileName(
+        this, second ? "Open second firmware image" : "Open first firmware image", QFile::decodeName(image),
         "Firmware images (*.bin *.rom);;All files (*)");
-    if (path.isEmpty()) return;
+    if (path.isEmpty())
+        return;
     image = QFile::encodeName(path);
-    loadFirmware(next, State::Stopped);
+    loadFirmware(next, State::Standby);
 }
 
 void PhoneWindow::openSnapshot()
 {
-    if (runTimer_.isActive()) setState(State::Paused);
+    if (runTimer_.isActive())
+        setState(State::Paused);
     const QString path = QFileDialog::getOpenFileName(this, "Import NVM snapshot and reset phone", {},
                                                       "SGH NVM snapshots (*.snv);;All files (*)");
-    if (!path.isEmpty()) loadFirmware(firmware_, State::Stopped, false, QFile::encodeName(path));
+    if (!path.isEmpty())
+        loadFirmware(firmware_, machine_powered_off(&machine_) ? State::Standby : State::Stopped,
+                     false, QFile::encodeName(path));
 }
 
 void PhoneWindow::openRecentFirmware()
@@ -440,17 +495,22 @@ void PhoneWindow::openRecentFirmware()
     const QString model = settings_.value("recent_firmware/model").toString();
     const QString rom = settings_.value("recent_firmware/rom1").toString();
     const QString second = settings_.value("recent_firmware/rom2").toString();
-    if (!machine_.loaded && QFileInfo(model).isFile() &&
-        (rom.isEmpty() || QFileInfo(rom).isFile()) && (second.isEmpty() || QFileInfo(second).isFile()))
-        loadFirmware({QFile::encodeName(model), QFile::encodeName(rom), QFile::encodeName(second)}, State::Running);
+    if (!machine_.loaded && QFileInfo(model).isFile() && (rom.isEmpty() || QFileInfo(rom).isFile()) &&
+        (second.isEmpty() || QFileInfo(second).isFile()))
+        loadFirmware({QFile::encodeName(model), QFile::encodeName(rom), QFile::encodeName(second)},
+                     State::Standby);
 }
 
 bool PhoneWindow::loadFirmware(Firmware firmware, State next, bool initializeDefaults,
                                const QByteArray &snapshot)
 {
-    if (runTimer_.isActive()) setState(State::Paused);
-    if (!saveStorage()) return false;
-    if (content_.active || importCurrent_ >= 0) importFailed("Phone reset before the import finished");
+    if (runTimer_.isActive())
+        setState(State::Paused);
+    releaseKeys();
+    if (!saveStorage())
+        return false;
+    if (content_.active || importCurrent_ >= 0)
+        importFailed("Phone reset before the import finished");
 
     /* Save before releasing the lock. Loading the next model tears down the
        old machine, so the store must be closed before loading or resetting. */
@@ -465,7 +525,8 @@ bool PhoneWindow::loadFirmware(Firmware firmware, State next, bool initializeDef
 
     if (!machine_load_pair(&machine_, firmware.model.constData(),
                            firmware.firstRom.isEmpty() ? nullptr : firmware.firstRom.constData(),
-                           firmware.secondRom.isEmpty() ? nullptr : firmware.secondRom.constData(), nullptr) ||
+                           firmware.secondRom.isEmpty() ? nullptr : firmware.secondRom.constData(),
+                           nullptr) ||
         !nvram_store_open(&storage_, &machine_, nullptr)) {
         next = State::Empty;
         stateDetail_ = QString::fromUtf8(machine_.error);
@@ -489,7 +550,8 @@ bool PhoneWindow::loadFirmware(Firmware firmware, State next, bool initializeDef
         setState(State::Empty);
         updateCall();
         refreshFilesystem();
-        if (logging) applyLogging(true);
+        if (logging)
+            applyLogging(true);
         QMessageBox::warning(this, "Cannot load firmware", error);
         return false;
     }
@@ -500,9 +562,10 @@ bool PhoneWindow::loadFirmware(Firmware firmware, State next, bool initializeDef
     if (!snapshot.isEmpty() && !nvram_store_import(&storage_, &machine_, snapshot.constData()))
         snapshotError = QString::fromUtf8(machine_.error);
     storage_.defaults_boot = initializeDefaults;
-    if (simOverride_ >= 0 && machine_.sim.attached) machine_.sim.present = simOverride_;
+    if (simOverride_ >= 0 && machine_.sim.attached)
+        machine_.sim.present = simOverride_;
     continuation_ = machine_.bringup;
-    battery_set(&machine_.battery, batteryPercent_, charging_);
+    machine_set_battery(&machine_, batteryPercent_, charging_);
     machine_.java_extended = javaExtended_;
     if (machine_.cellular.ready) {
         const QByteArray name = networkName_.toUtf8();
@@ -517,30 +580,40 @@ bool PhoneWindow::loadFirmware(Firmware firmware, State next, bool initializeDef
     rtc_set_sync(&machine_.rtc, hostTime_);
     syncClock();
     openAudio();
-    if (logging) applyLogging(true);
+    if (next == State::Standby) {
+        if (machine_start_standby(&machine_))
+            offSinceNs_ = wallClock_.nsecsElapsed();
+        else
+            next = State::Stopped;
+    }
+    if (logging)
+        applyLogging(true);
     lastSave_ = wallClock_.elapsed();
     speed_ = {};
     lcd_->reset();
     patternAction_->setChecked(false);
     fitLcd();
     setWindowTitle(QString("SGHemu - %1").arg(QString::fromUtf8(machine_.name)));
-    settings_.setValue("recent_firmware/model", QFileInfo(QFile::decodeName(firmware.model)).absoluteFilePath());
+    settings_.setValue("recent_firmware/model",
+                       QFileInfo(QFile::decodeName(firmware.model)).absoluteFilePath());
     settings_.setValue("recent_firmware/rom1", QFile::decodeName(firmware.firstRom));
     settings_.setValue("recent_firmware/rom2", QFile::decodeName(firmware.secondRom));
     setState(next);
     updateCall();
     refreshFilesystem();
-    if (!snapshotError.isEmpty()) QMessageBox::warning(this, "Cannot import NVM snapshot", snapshotError);
+    if (!snapshotError.isEmpty())
+        QMessageBox::warning(this, "Cannot import NVM snapshot", snapshotError);
     return snapshotError.isEmpty();
 }
 
-bool PhoneWindow::saveStorage(bool commitImport)
+bool PhoneWindow::saveStorage()
 {
-    if (!storage_.active) return true;
+    if (!storage_.active)
+        return true;
     QString error;
     /* During the first boot, the core saves the defaults only when the guest
        finishes initializing them. A pause or close must not save half of them. */
-    if (!storage_.defaults_boot && !importDiscard_ && (importCurrent_ < 0 || commitImport) &&
+    if (!storage_.defaults_boot && !importDiscard_ && importCurrent_ < 0 &&
         !nvram_store_flush(&storage_, &machine_))
         error = QString::fromUtf8(machine_.error);
     else if (!simStorage_.isEmpty() && !sim_card_save_storage(&machine_.sim.card, simStorage_.constData()))
@@ -549,7 +622,8 @@ bool PhoneWindow::saveStorage(bool commitImport)
         lastSave_ = wallClock_.elapsed();
         return true;
     }
-    if (runTimer_.isActive()) setState(State::Paused);
+    if (runTimer_.isActive())
+        setState(State::Paused);
     QMessageBox::warning(this, "Cannot save phone state", error);
     return false;
 }
@@ -565,7 +639,8 @@ void PhoneWindow::setState(State state, const QString &detail)
         runTimer_.start();
     } else if (!running) {
         runTimer_.stop();
-        releaseKeys();
+        /* Pausing or stopping the CPU does not release the PMU's Power input. */
+        releaseKeys(machine_.c100.enabled ? 1u << SGH_KEY_POWER : 0);
         lcd_->capture(true);
     }
     phone_io_pause(&machine_.phone_io, !running);
@@ -576,7 +651,8 @@ void PhoneWindow::setState(State state, const QString &detail)
 void PhoneWindow::updateUi()
 {
     const bool running = state_ == State::Running;
-    const bool canRun = machine_.loaded && !running && !machine_.cpu.halted;
+    const bool standby = machine_powered_off(&machine_);
+    const bool canRun = machine_.loaded && !running && !machine_.cpu.halted && !standby;
     run_->setEnabled(canRun);
     pause_->setEnabled(running);
     stop_->setEnabled(machine_.loaded);
@@ -590,35 +666,50 @@ void PhoneWindow::updateUi()
     priorityAction_->setChecked(highPriority_);
     javaAction_->setEnabled(machine_.java_buffer_get != 0);
     batteryLevel_->setEnabled(machine_.battery.enabled);
-    batteryCable_->setEnabled(machine_.battery.enabled || machine_.battery.charger_port);
+    batteryCable_->setEnabled(machine_.c100.enabled || machine_.battery.enabled || machine_.battery.charger_port);
     cellAction_->setEnabled(machine_.cellular.ready != 0);
     cellAction_->setChecked(cellEnabled_);
     networkAction_->setEnabled(cellAction_->isEnabled());
-    smsAction_->setEnabled(machine_.cellular.enabled && machine_.cellular.name_ptr && machine_.sim.present);
+    smsAction_->setEnabled(!standby && machine_.cellular.enabled && machine_.cellular.name_ptr && machine_.sim.present);
     callAction_->setEnabled(smsAction_->isEnabled());
-    for (auto *gsm : gsmActions_) gsm->setEnabled(machine_.network.txn_start != 0);
+    for (auto *gsm : gsmActions_)
+        gsm->setEnabled(machine_.network.txn_start != 0);
     audioAction_->setChecked(audioEnabled_);
     patternAction_->setEnabled(machine_.loaded);
-    for (auto *button : buttons_) button->setEnabled(machine_.loaded);
+    for (unsigned key = 0; key < SGH_MAX_KEYS; ++key)
+        buttons_[key]->setEnabled(machine_.loaded && (!standby || key == SGH_KEY_POWER));
 
     QString message = stateDetail_;
     if (message.isEmpty()) {
         switch (state_) {
-        case State::Empty: message = "No firmware - Ctrl+O to open a folder"; break;
+        case State::Empty:
+            message = "No firmware - Ctrl+O to open a folder";
+            break;
         case State::Running:
             message = storage_.provision || storage_.defaults_boot ? "Preparing phone storage..." : "Running";
             break;
-        case State::Paused: message = "Paused"; break;
-        case State::Stopped: message = "Stopped"; break;
+        case State::Paused:
+            message = "Paused";
+            break;
+        case State::Stopped:
+            message = "Stopped";
+            break;
+        case State::Standby:
+            message = "Standby";
+            break;
         }
     }
-    if (water_) message += " | Water";
+    if (water_)
+        message += " | Water";
     statusBar()->showMessage(message);
-    const QString audioError = *machine_.ma3.output_error ? QString::fromUtf8(machine_.ma3.output_error) : audioError_;
+    const QString audioError =
+        *machine_.ma3.output_error ? QString::fromUtf8(machine_.ma3.output_error) : audioError_;
     statusBar()->setToolTip(audioError.isEmpty() ? message : message + '\n' + audioError);
     emu_speed_sample(&speed_, wallClock_.nsecsElapsed(), 1000000000, machine_.clock.nanoseconds,
                      running && machine_.clock.attached);
-    speedLabel_->setText(!running ? "0.0%" : speed_.valid ? QString::number(speed_.percent, 'f', 1) + '%' : "--%");
+    speedLabel_->setText(!running       ? "0.0%"
+                         : speed_.valid ? QString::number(speed_.percent, 'f', 1) + '%'
+                                        : "--%");
 }
 
 bool PhoneWindow::emulate(unsigned steps, State afterReset)
@@ -650,16 +741,39 @@ bool PhoneWindow::emulate(unsigned steps, State afterReset)
                 QMessageBox::warning(this, "Phone import failed", error);
                 return false;
             }
-            if (imported == 2) importAccepted();
+            if (imported == 2)
+                importAccepted();
         }
-        /* Provisioning and host-requested guest calls watch for exact PCs. */
-        const bool singleStep = storage_.provision || storage_.defaults_boot || content_.active ||
+        /* Roll back an interrupted import before the restarted guest runs. */
+        const bool importing = importCurrent_ >= 0 || content_.active;
+        const bool singleStep = storage_.provision || storage_.defaults_boot || importing || importDiscard_ ||
                                 (machine_.battery.enabled && !machine_.battery.adc);
         const unsigned batch = singleStep ? 1 : qMin(steps - done, 64u);
-        if (machine_run(&machine_, batch, continuation_) != batch) {
+        const uint64_t resetCount = machine_.c100.reset_count;
+        const unsigned ran = machine_run(&machine_, batch, continuation_);
+        if (machine_powered_off(&machine_)) {
+            enterStandby();
+            return false;
+        }
+        if (resetCount != machine_.c100.reset_count && (importing || importDiscard_)) {
+            if (importing)
+                importFailed("Phone reset before the import finished");
+            if (importDiscard_ && !nvram_store_restore_interrupted(&storage_, &machine_)) {
+                machine_.cpu.halted = 1;
+                machine_.cpu.error = machine_.error;
+                setState(State::Stopped, QString::fromUtf8(machine_.error));
+                return false;
+            }
+            importDiscard_ = false;
+            if (state_ == State::Running)
+                setState(State::Running);
+            refreshFilesystem();
+        }
+        if (ran != batch) {
             const char *reason = machine_.cpu.error ? machine_.cpu.error : "Unmapped hardware access";
             logStop(reason);
-            if (importCurrent_ >= 0 || content_.active) importFailed(QString::fromUtf8(reason));
+            if (importCurrent_ >= 0 || content_.active)
+                importFailed(QString::fromUtf8(reason));
             const QString pc = QString::number(machine_.cpu.r[15], 16);
             setState(State::Stopped, QString("Stopped at 0x%1: %2").arg(pc, QString::fromUtf8(reason)));
             return false;
@@ -674,8 +788,9 @@ void PhoneWindow::runSlice()
     /* Keep a small PCM lead, then yield to Qt. Silent execution is unpaced. */
     const bool paced = audio_output_live(machine_.ma3.output) || phone_io_live(&machine_.phone_io);
     const auto guestTime = [this] {
-        return machine_.clock.attached ? machine_.clock.nanoseconds :
-               (machine_.cpu.cycles - audioGuestStart_) * UINT64_C(1000000000) / audioTicks_;
+        return machine_.clock.attached
+                   ? machine_.clock.nanoseconds
+                   : (machine_.cpu.cycles - audioGuestStart_) * UINT64_C(1000000000) / audioTicks_;
     };
     uint64_t start = machine_.clock.attached ? audioGuestStart_ : 0;
     const uint64_t due = start + audioClock_.nsecsElapsed();
@@ -687,29 +802,71 @@ void PhoneWindow::runSlice()
     QElapsedTimer slice;
     slice.start();
     do {
-        if (paced && guestTime() > start + uint64_t(audioClock_.nsecsElapsed()) + 20000000) break;
+        if (paced && guestTime() > start + uint64_t(audioClock_.nsecsElapsed()) + 20000000)
+            break;
         updateTextKeys();
         if (profileLog_ && (profilePcs_.size() < 4096 || profilePcs_.contains(machine_.cpu.r[15])))
             ++profilePcs_[machine_.cpu.r[15]];
-        if (!emulate(512, State::Running)) return;
-        if (machine_.clock.attached) lcd_->capture();
+        if (!emulate(512, State::Running))
+            return;
+        if (machine_.clock.attached)
+            lcd_->capture();
     } while (slice.elapsed() < runTimer_.interval());
+}
+
+void PhoneWindow::enterStandby()
+{
+    offSinceNs_ = wallClock_.nsecsElapsed();
+    if (importCurrent_ >= 0 || content_.active)
+        importFailed("Phone powered off before the import finished");
+    if (importDiscard_ && nvram_store_restore_interrupted(&storage_, &machine_))
+        importDiscard_ = false;
+    setState(State::Standby, importDiscard_ ? QString("Standby - %1").arg(machine_.error) : QString());
+    refreshFilesystem();
+    saveStorage();
+}
+
+void PhoneWindow::advanceStandby(bool powerPressed)
+{
+    const qint64 offNow = wallClock_.nsecsElapsed();
+    machine_advance_off(&machine_, offNow - offSinceNs_);
+    offSinceNs_ = offNow;
+    if (powerPressed)
+        machine_key(&machine_, SGH_KEY_POWER, 1);
+    if (machine_powered_off(&machine_))
+        return;
+    if (importDiscard_) {
+        machine_.cpu.halted = 1;
+        machine_.cpu.error = "Could not restore NVM after interrupted import; reset the phone";
+    }
+    if (machine_.cpu.halted)
+        setState(State::Stopped, QString::fromUtf8(machine_.cpu.error));
+    else
+        setState(State::Running);
+    refreshFilesystem();
 }
 
 void PhoneWindow::refresh()
 {
     const qint64 now = wallClock_.elapsed();
-    if (hostTime_ && machine_.rtc.attached && now - lastClockSync_ >= 1000) syncClock();
-    if (!machine_.clock.attached && runTimer_.isActive()) lcd_->capture();
+    if (hostTime_ && machine_.rtc.attached && now - lastClockSync_ >= 1000)
+        syncClock();
+    if (machine_powered_off(&machine_))
+        advanceStandby();
+    if (!machine_.clock.attached && runTimer_.isActive())
+        lcd_->capture();
     lcd_->blend();
 
     unsigned led = machine_.phone_io.led & 7u;
-    if (machine_.ma3.led_tick > machine_.phone_io.led_tick)
+    if (machine_powered_off(&machine_))
+        led = 0;
+    else if (machine_.ma3.led_tick > machine_.phone_io.led_tick)
         led = machine_.ma3.led_on ? (machine_.ma3.led_color & 7u) : 0;
     if (led != led_) {
         led_ = led;
         QPixmap icon(16, 16);
         icon.fill(QColor((led & 1) ? 255 : 0, (led & 2) ? 255 : 0, (led & 4) ? 255 : 0));
+        ledIndicator_->setPixmap(icon);
         setWindowIcon(QIcon(icon));
     }
     updateUi();
@@ -717,7 +874,8 @@ void PhoneWindow::refresh()
     updateCall();
     checkImport();
     logProgress();
-    if (runTimer_.isActive() && storage_.active && now - lastSave_ >= 5000) saveStorage();
+    if (runTimer_.isActive() && storage_.active && now - lastSave_ >= 5000)
+        saveStorage();
 }
 
 void PhoneWindow::fitLcd()
@@ -745,7 +903,8 @@ void PhoneWindow::openAudio()
 void PhoneWindow::syncClock()
 {
     lastClockSync_ = wallClock_.elapsed();
-    if (!hostTime_ || !machine_.rtc.attached || host_sync_rtc(&machine_.rtc)) return;
+    if (!hostTime_ || !machine_.rtc.attached || host_sync_rtc(&machine_.rtc))
+        return;
     hostTime_ = false;
     rtc_set_sync(&machine_.rtc, 0);
     settings_.setValue("emulation/sync_time", false);
@@ -756,41 +915,61 @@ void PhoneWindow::updateKey(unsigned key)
 {
     /* Releasing a key on the PC must not lift the same on-screen button. */
     const bool held = ((mouseKeys_ | textHeld_) & (1u << key)) || keyboardKeys_.key(key, 0) != 0;
-    machine_key(&machine_, key, held);
+    const bool standby = machine_powered_off(&machine_);
     buttons_[key]->setDown(held);
+    if (standby && key == SGH_KEY_POWER && held) {
+        advanceStandby(true);
+        return;
+    }
+    machine_key(&machine_, key, held);
+    if (!standby && machine_powered_off(&machine_))
+        enterStandby();
 }
 
-void PhoneWindow::releaseKeys()
+void PhoneWindow::releaseKeys(uint32_t keep)
 {
-    const uint32_t held = machine_.keys;
-    mouseKeys_ = textHeld_ = 0;
+    const uint32_t released = machine_.keys & ~keep;
+    mouseKeys_ &= keep;
+    textHeld_ = 0;
     key_text_reset(&textKeys_);
-    keyboardKeys_.clear();
+    for (auto it = keyboardKeys_.begin(); it != keyboardKeys_.end();) {
+        if (keep & (1u << it.value()))
+            ++it;
+        else
+            it = keyboardKeys_.erase(it);
+    }
     for (unsigned key = 0; key < SGH_MAX_KEYS; ++key)
-        if (held & (1u << key)) updateKey(key);
+        if (released & (1u << key))
+            updateKey(key);
 }
 
 void PhoneWindow::updateTextKeys()
 {
     unsigned key;
     int down;
-    if (!key_text_tick(&textKeys_, machine_.clock.nanoseconds, &key, &down)) return;
-    if (down) textHeld_ |= 1u << key;
-    else textHeld_ &= ~(1u << key);
+    if (!key_text_tick(&textKeys_, machine_.clock.nanoseconds, &key, &down))
+        return;
+    if (down)
+        textHeld_ |= 1u << key;
+    else
+        textHeld_ &= ~(1u << key);
     updateKey(key);
 }
 
 bool PhoneWindow::event(QEvent *event)
 {
-    if (event->type() == QEvent::WindowDeactivate) releaseKeys();
+    if (event->type() == QEvent::WindowDeactivate)
+        releaseKeys();
     return QMainWindow::event(event);
 }
 
 void PhoneWindow::keyPressEvent(QKeyEvent *event)
 {
-    if (machine_.loaded && !(event->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier))) {
+    if (machine_.loaded &&
+        !(event->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier))) {
         int hostKey = event->key();
-        if (hostKey == Qt::Key_Enter || hostKey == Qt::Key_Space) hostKey = Qt::Key_Return;
+        if (hostKey == Qt::Key_Enter || hostKey == Qt::Key_Space)
+            hostKey = Qt::Key_Return;
         const bool typing = textInput_ && machine_.clock.attached && runTimer_.isActive();
         if (typing && event->key() == Qt::Key_Escape) {
             releaseKeys();
@@ -800,15 +979,18 @@ void PhoneWindow::keyPressEvent(QKeyEvent *event)
         if (typing && event->text().size() == 1) {
             const QChar character = event->text().front();
             if (character.isLetter() || character == ' ' || character == '.') {
-                if (!key_text_char(&textKeys_, character.unicode())) QApplication::beep();
+                if (!key_text_char(&textKeys_, character.unicode()))
+                    QApplication::beep();
                 event->accept();
                 return;
             }
         }
         for (unsigned key = 0; key < SGH_MAX_KEYS; ++key) {
-            if (phoneKeys[key].hostKey != hostKey) continue;
-            if (typing && (textKeys_.count || textKeys_.pressed || hostKey == Qt::Key_Backspace)) {
-                if (!key_text_key(&textKeys_, key)) QApplication::beep();
+            if (phoneKeys[key].hostKey != hostKey)
+                continue;
+            if (typing && key != SGH_KEY_POWER && (textKeys_.count || textKeys_.pressed || hostKey == Qt::Key_Backspace)) {
+                if (!key_text_key(&textKeys_, key))
+                    QApplication::beep();
             } else if (!event->isAutoRepeat()) {
                 keyboardKeys_.insert(keyIdentity(event), key);
                 updateKey(key);
@@ -837,12 +1019,14 @@ void PhoneWindow::keyReleaseEvent(QKeyEvent *event)
 
 void PhoneWindow::closeEvent(QCloseEvent *event)
 {
-    if (runTimer_.isActive()) setState(State::Paused);
+    if (runTimer_.isActive())
+        setState(State::Paused);
     if (!saveStorage()) {
         event->ignore();
         return;
     }
-    for (auto *dialog : findChildren<QDialog *>(QString(), Qt::FindDirectChildrenOnly)) dialog->hide();
+    for (auto *dialog : findChildren<QDialog *>(QString(), Qt::FindDirectChildrenOnly))
+        dialog->hide();
     settings_.sync();
     audioSettings_.sync();
     event->accept();
@@ -852,7 +1036,8 @@ int main(int argc, char **argv)
 {
     QApplication app(argc, argv);
     const QString models = modelsDirectory();
-    if (!models.isEmpty()) QDir::setCurrent(QFileInfo(models).absolutePath());
+    if (!models.isEmpty())
+        QDir::setCurrent(QFileInfo(models).absolutePath());
     PhoneWindow window;
     window.show();
     return app.exec();

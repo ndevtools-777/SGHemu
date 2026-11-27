@@ -16,6 +16,7 @@ sha1 of the concatenated payload -- separates two very different situations:
 usage: python tools\\fifo_diff.py REFERENCE.log EMULATOR.log
 env:   FIFO_DIFF_OUT=<path>   also write the report as UTF-8 to <path>
 """
+
 import collections
 import hashlib
 import os
@@ -84,8 +85,16 @@ def main():
     print("\nfirst divergence in op order at op %d:" % n)
     for label, stream in (("ref", ref), ("emu", emu)):
         for i in range(max(0, n - 5), min(len(stream), n + 6)):
-            print("    %s%s %4d  sel %02x  %s" % ("->" if i == n else "  ", label, i, stream[i][0],
-                                                  " ".join("%02x" % b for b in stream[i][1])))
+            print(
+                "    %s%s %4d  sel %02x  %s"
+                % (
+                    "->" if i == n else "  ",
+                    label,
+                    i,
+                    stream[i][0],
+                    " ".join("%02x" % b for b in stream[i][1]),
+                )
+            )
     return 0
 
 

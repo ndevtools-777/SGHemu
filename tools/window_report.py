@@ -6,6 +6,7 @@ Reports the access mix (read/write port, selector), the firmware-visible
 addresses the guest touches, and how often the native status byte said the
 delayed FIFO was empty.
 """
+
 import sys
 from collections import Counter
 
@@ -29,11 +30,11 @@ def main():
         ops["%s%s" % (p[2], port)] += 1
         if p[2] == "W" and port == "0":
             sel = val
-            ops["status %02x" % (val & 0x3f)] += 1
+            ops["status %02x" % (val & 0x3F)] += 1
         elif p[2] == "R" and port == "0":
             status[val] += 1
         elif p[2] == "W" and port == "4":
-            if (sel & 0x3f) == 3:
+            if (sel & 0x3F) == 3:
                 addrs[val] += 1
     print("accesses in [%d,%d]: %d" % (lo, hi, n))
     for k, v in ops.most_common(20):

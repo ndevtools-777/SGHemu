@@ -5,7 +5,9 @@
 #include "flash.h"
 #include "lcd.h"
 #include "intc.h"
+#include "gpt.h"
 #include "lp_timer.h"
+#include "pwm.h"
 #include "pmic.h"
 #include "irom.h"
 #include "keypad.h"
@@ -20,24 +22,59 @@
 #include "phone_net.h"
 #define SGH_MAX_IDENTITIES 16
 #define SGH_MAX_KEYS 22
+enum { SGH_KEY_POWER = 8 }; /* C100 End/Power. */
 /* Set before machine_load to open the factory/service path: attaches the
    loopback cable and the general DMA controller it drives. */
 extern int sgh_service_mode;
-typedef struct { Bus *bus; uint32_t address; uint16_t value; } Identity16;
-typedef struct { Bus *bus; uint32_t address, value; int irom_vector; } Register32;
-typedef struct { uint32_t base; size_t size; char path[1024]; } RomImage;
+
+typedef struct {
+    Bus *bus;
+    uint32_t address;
+    uint16_t value;
+} Identity16;
+
+typedef struct {
+    Bus *bus;
+    uint32_t address, value, reset_value;
+    int irom_vector;
+} Register32;
+
+typedef struct {
+    uint32_t base;
+    size_t size;
+    char path[1024];
+} RomImage;
+
 typedef struct {
     Bus *bus;
     uint32_t base, reference_hz, arm_hz, dsp_hz;
+    uint32_t enable_base;
+    uint16_t enables, enable_reset;
     uint16_t registers[3], encoding[8];
     uint32_t arm_rates[8], dsp_rates[8];
     unsigned count;
     uint64_t nanoseconds, fraction, clock_cycles;
     /* Per-step conversion cache: delta cycles -> whole ns and remainder at
        table_hz, so the hot path needs no 64-bit division. */
-    uint64_t step_ns[33]; uint32_t step_rem[33], table_hz;
+    uint64_t step_ns[33];
+    uint32_t step_rem[33], table_hz;
     int attached, unknown;
 } PhoneClock;
+
+typedef enum { C100_WAKE_NONE, C100_WAKE_KEY, C100_WAKE_CHARGER, C100_WAKE_RTC } C100WakeSource;
+
+typedef struct {
+    uint64_t key_hold_ns, release_ns, off_ns, off_alarm_events;
+    uint64_t reset_count, reset_cycle;
+    GpioPort *backlight_a, *backlight_c;
+    Pwm pwm;
+    Register32 asic_mode;
+    uint16_t cs3;
+    C100WakeSource pending_wake, wake_source;
+    uint8_t pmic_wake_xor;
+    int enabled, powered, reset_pending, wired_lcd, keypad_backlight;
+} C100Board;
+
 typedef struct {
     Bus bus;
     Arm7 cpu;
@@ -45,7 +82,7 @@ typedef struct {
     Audio audio;
     uint32_t reset;
     char name[160], config_path[1024], error[256];
-    uint32_t *pixels; /* top-down XRGB8888, supplied by the future LCD device */
+    uint32_t *pixels; /* LCD framebuffer, top-down XRGB8888 */
     unsigned width, height;
     uint32_t keys;
     uint8_t *unplaced_rom; /* Retained image; never exposed at a guessed guest address. */
@@ -67,18 +104,20 @@ typedef struct {
     uint32_t import_trigger, import_alloc, import_search, import_write;
     uint32_t java_ready, java_globals, java_set_jar, java_send_ui, java_message, java_min_instructions;
     /* Optional compatibility extension, not additional real-phone RAM. */
-    uint32_t java_buffer_get,java_buffer_set,java_buffer_table,java_buffer_base,java_buffer_size;
+    uint32_t java_buffer_get, java_buffer_set, java_buffer_table, java_buffer_base, java_buffer_size;
     uint8_t *java_buffer_data;
     int java_extended;
     Lcd lcd;
     Intc intc;
     Intc intc_aux;
+    Gpt timers[2];
     LpTimer lp_timer;
     Pmic pmic;
     Irom irom;
     Keypad keypad;
     Sim sim;
     Ma3 ma3;
+    SdsUart debug_uart;
     SdsUart sds_uart;
     SdsDma sds_dma;
     PhoneClock clock;
@@ -86,6 +125,7 @@ typedef struct {
     Battery battery;
     GpioPort gpio_ports[5];
     unsigned gpio_count;
+    C100Board c100;
     DspMailbox dsp_mailbox;
     PhoneIo phone_io;
     Cellular cellular;
@@ -97,15 +137,26 @@ typedef struct {
     Register32 *irq_gate_register;
     int loaded, bringup;
 } Machine;
+
 /* Initialize to zero before first use. Loading tears down the previous machine. */
 int machine_load(Machine *m, const char *config_path, const char *rom_override, FILE *log);
 int machine_load_pair(Machine *m, const char *config_path, const char *rom_override,
-    const char *second_override, FILE *log);
+                      const char *second_override, FILE *log);
 void machine_destroy(Machine *m);
+int machine_sleeping(const Machine *m);
+int machine_powered_off(const Machine *m);
+/* Put a freshly loaded, cold-bootable board in Standby. */
+int machine_start_standby(Machine *m);
+/* Advance the retained clock and service charger/RTC wake. Returns 1 on a cold reset. */
+int machine_advance_off(Machine *m, uint64_t elapsed_ns);
+void machine_set_battery(Machine *m, unsigned percent, int charging);
 int machine_step(Machine *m, int continue_unmapped);
 /* Execute up to count ordinary machine steps; returns completed steps. No
-   instruction/idle-loop skipping. Callers must bound count for host input. */
-unsigned machine_run(Machine *m,unsigned count,int continue_unmapped);
+   instruction skipping. A sleeping step advances time without retiring an
+   instruction. Callers must bound count for host input. */
+unsigned machine_run(Machine *m, unsigned count, int continue_unmapped);
+/* On a powered-off C100, a fresh Power press cold-resets the board immediately. */
 void machine_key(Machine *m, unsigned key, int down);
 void machine_pattern(Machine *m, int enabled);
+int machine_cx805_status(const Machine *m, char *text, size_t size);
 #endif

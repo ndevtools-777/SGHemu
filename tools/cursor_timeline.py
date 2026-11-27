@@ -10,6 +10,7 @@ Usage: python tools\\cursor_timeline.py out.log [lo_ts] [hi_ts]
 Without a window the script reports a summary plus the longest gaps between
 cursor reads; with a window it lists every read in that tick range.
 """
+
 import sys
 
 
@@ -38,12 +39,12 @@ def main():
         return
     changes = sum(1 for i in range(1, len(cursor)) if cursor[i][1] != cursor[i - 1][1])
     print("distinct values: %d  changes: %d" % (len(set(v for _, v in cursor)), changes))
-    gaps = sorted(((cursor[i][0] - cursor[i - 1][0], i) for i in range(1, len(cursor))),
-                  reverse=True)
+    gaps = sorted(((cursor[i][0] - cursor[i - 1][0], i) for i in range(1, len(cursor))), reverse=True)
     print("longest gaps between cursor reads:")
     for gap, i in gaps[:12]:
-        print("   %d ticks (%.2fs) before ts %d -> 0x%02x"
-              % (gap, gap / 2166667.0, cursor[i][0], cursor[i][1]))
+        print(
+            "   %d ticks (%.2fs) before ts %d -> 0x%02x" % (gap, gap / 2166667.0, cursor[i][0], cursor[i][1])
+        )
     print("first 12:")
     for t, v in cursor[:12]:
         print("   %d -> 0x%02x" % (t, v))

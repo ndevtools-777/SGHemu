@@ -2,6 +2,7 @@
 #define SGH_SIM_H
 #include "intc.h"
 #include "sim_card.h"
+
 typedef struct {
     Bus *bus;
     Intc *intc;
@@ -16,15 +17,21 @@ typedef struct {
     uint8_t tx;
     int attached, present;
 } Sim;
+
 int sim_attach(Sim *s, Bus *bus, Intc *intc, uint32_t base, uint32_t timer, uint32_t dma);
+void sim_cold_reset(Sim *s);
 void sim_advance(Sim *s, uint64_t ticks);
+
 /* Keep the no-event path inline in the machine loop. IRQ status remains
    level-like even when INTC was acknowledged after the last timed event. */
-static inline void sim_tick(Sim *s,uint64_t ticks)
+static inline void sim_tick(Sim *s, uint64_t ticks)
 {
-    if(!s->attached)return;
-    if(ticks>=s->next_event || s->present!=s->scheduled_present ||
-        s->card.response_size!=s->scheduled_response)sim_advance(s,ticks);
-    else if(s->regs[2]&s->regs[3]&0x18)s->intc->pending|=8;
+    if (!s->attached)
+        return;
+    if (ticks >= s->next_event || s->present != s->scheduled_present ||
+        s->card.response_size != s->scheduled_response)
+        sim_advance(s, ticks);
+    else if (s->regs[2] & s->regs[3] & 0x18)
+        s->intc->pending |= 8;
 }
 #endif

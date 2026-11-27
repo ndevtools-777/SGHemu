@@ -6,6 +6,7 @@ generator goes dry are readable in order.
 
 usage: python tools\\ram_watch_gap.py [LOG] [before] [after]
 """
+
 import sys
 
 sys.path.insert(0, "tools")
@@ -22,12 +23,20 @@ def main():
     for line in open(path, "r", encoding="utf-8", errors="replace"):
         match = report.WRITE.match(line)
         if match:
-            writes.append((int(match.group(1)), int(match.group(2), 16),
-                           int(match.group(4), 16), int(match.group(5), 16)))
+            writes.append(
+                (
+                    int(match.group(1)),
+                    int(match.group(2), 16),
+                    int(match.group(4), 16),
+                    int(match.group(5), 16),
+                )
+            )
     best = max(range(1, len(writes)), key=lambda i: writes[i][0] - writes[i - 1][0])
     print("%s: %d writes" % (path, len(writes)))
-    print("largest gap: %d ticks, %d -> %d" % (
-        writes[best][0] - writes[best - 1][0], writes[best - 1][0], writes[best][0]))
+    print(
+        "largest gap: %d ticks, %d -> %d"
+        % (writes[best][0] - writes[best - 1][0], writes[best - 1][0], writes[best][0])
+    )
     print("\n  %-12s %-8s %-28s %s" % ("tick", "addr", "writer", "value"))
     for i in range(max(0, best - before), min(len(writes), best + after)):
         tick, pc, address, value = writes[i]

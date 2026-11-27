@@ -8,6 +8,7 @@ or a silence can be attributed to the routine that stopped.
 usage: python tools\\ram_watch_windows.py LOG start1,end1 [start2,end2 ...]
        ticks are the log's own tick column (as printed by ram_watch_report.py)
 """
+
 import collections
 import sys
 
@@ -20,8 +21,14 @@ def load(path):
     for line in open(path, "r", encoding="utf-8", errors="replace"):
         match = report.WRITE.match(line)
         if match:
-            writes.append((int(match.group(1)), int(match.group(2), 16),
-                           int(match.group(4), 16), int(match.group(5), 16)))
+            writes.append(
+                (
+                    int(match.group(1)),
+                    int(match.group(2), 16),
+                    int(match.group(4), 16),
+                    int(match.group(5), 16),
+                )
+            )
     return writes
 
 

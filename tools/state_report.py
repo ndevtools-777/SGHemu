@@ -6,6 +6,7 @@ Prints one line per dump: output time, delayed-FIFO fill, active voices,
 dirty (stale ADPCM cache) voices, and whether any voice phase advanced since
 the previous dump. A voice whose phase does not move while active is a stall.
 """
+
 import sys
 import wave
 import struct
@@ -19,8 +20,7 @@ def parse_state(path):
         if line.startswith("GEN "):
             if cur:
                 blocks.append(cur)
-            cur = {"frames": int(line[4:]), "fill": None, "size": None,
-                   "voices": []}
+            cur = {"frames": int(line[4:]), "fill": None, "size": None, "voices": []}
         elif line.startswith("FIFO ") and cur is not None:
             cur["size"] = int(line.split("size=")[1].split()[0])
             cur["fill"] = int(line.split("fill=")[1].split()[0])
@@ -40,7 +40,7 @@ def runs(path, thresh, win=2400):
     out = []
     prev = None
     for i in range(frames):
-        chunk = data[i * win * 4:(i + 1) * win * 4]
+        chunk = data[i * win * 4 : (i + 1) * win * 4]
         vals = struct.unpack("<%dh" % (win * 2), chunk)
         peak = max(abs(v) for v in vals)
         on = peak > thresh

@@ -1,0 +1,20 @@
+BasedOnStyle: LLVM
+IndentWidth: 4
+ContinuationIndentWidth: 4
+ColumnLimit: 110
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterFunction: true
+AllowShortFunctionsOnASingleLine: None
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortBlocksOnASingleLine: Never
+AllowShortCaseLabelsOnASingleLine: false
+PointerAlignment: Right
+SortIncludes: Never
+BreakStringLiterals: false
+ReflowComments: false
+SeparateDefinitionBlocks: Always
+---
+Language: Java
+BreakBeforeBraces: Attach

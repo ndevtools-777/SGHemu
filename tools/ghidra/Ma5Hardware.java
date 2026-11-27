@@ -15,13 +15,17 @@ public class Ma5Hardware extends GhidraScript {
             SymbolIterator symbols = currentProgram.getSymbolTable().getAllSymbols(true);
             while (symbols.hasNext()) {
                 Symbol symbol = symbols.next();
-                if (!symbol.getName().startsWith("Hw_")) continue;
+                if (!symbol.getName().startsWith("Hw_"))
+                    continue;
                 Function function = getFunctionAt(symbol.getAddress());
                 out.println("EXPORT " + symbol.getName() + " " + symbol.getAddress());
-                if (function == null) continue;
+                if (function == null)
+                    continue;
                 DecompileResults result = decompiler.decompileFunction(function, 60, monitor);
-                if (result.decompileCompleted()) out.println(result.getDecompiledFunction().getC());
-                InstructionIterator instructions = currentProgram.getListing().getInstructions(function.getBody(), true);
+                if (result.decompileCompleted())
+                    out.println(result.getDecompiledFunction().getC());
+                InstructionIterator instructions =
+                    currentProgram.getListing().getInstructions(function.getBody(), true);
                 while (instructions.hasNext()) {
                     Instruction instruction = instructions.next();
                     if (instruction.getMnemonicString().equalsIgnoreCase("RET"))
@@ -35,14 +39,19 @@ public class Ma5Hardware extends GhidraScript {
                     disassemble(address);
                     function = createFunction(address, null);
                 }
-                if (function == null) continue;
+                if (function == null)
+                    continue;
                 out.println("INTERNAL " + function.getName() + " " + function.getEntryPoint());
                 DecompileResults result = decompiler.decompileFunction(function, 60, monitor);
-                if (result.decompileCompleted()) out.println(result.getDecompiledFunction().getC());
+                if (result.decompileCompleted())
+                    out.println(result.getDecompiledFunction().getC());
             }
             out.println("EXTERNAL SYMBOLS");
             SymbolIterator externals = currentProgram.getSymbolTable().getExternalSymbols();
-            while (externals.hasNext()) out.println(externals.next().getName());
-        } finally { decompiler.dispose(); }
+            while (externals.hasNext())
+                out.println(externals.next().getName());
+        } finally {
+            decompiler.dispose();
+        }
     }
 }

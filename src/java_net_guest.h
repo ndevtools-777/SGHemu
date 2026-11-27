@@ -8,11 +8,12 @@
 static int memory(Bus *bus, uint32_t address, unsigned size, int write)
 {
     unsigned i;
-    if (!size) return 1;
+    if (!size)
+        return 1;
     for (i = 0; i < bus->count; ++i) {
         Region *region = &bus->regions[i];
-        if (region->data && !region->read && (!write || !region->readonly) &&
-            address >= region->base && (uint64_t)address + size <= (uint64_t)region->base + region->size)
+        if (region->data && !region->read && (!write || !region->readonly) && address >= region->base &&
+            (uint64_t)address + size <= (uint64_t)region->base + region->size)
             return 1;
     }
     return 0;

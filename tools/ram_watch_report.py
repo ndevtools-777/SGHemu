@@ -13,6 +13,7 @@ in what order, and to what values".
 Usage: python tools\\ram_watch_report.py [build/gui-ram-watch.log] [lst] [top]
        lst defaults to models\\c100\\roms\\C100XEDK1\\C100XEDK1.lst
 """
+
 import bisect
 import re
 import sys
@@ -66,8 +67,14 @@ def main():
         for line in open(path, "r", encoding="utf-8", errors="replace"):
             match = WRITE.match(line)
             if match:
-                writes.append((int(match.group(1)), int(match.group(2), 16),
-                               int(match.group(4), 16), int(match.group(5), 16)))
+                writes.append(
+                    (
+                        int(match.group(1)),
+                        int(match.group(2), 16),
+                        int(match.group(4), 16),
+                        int(match.group(5), 16),
+                    )
+                )
     except OSError as error:
         print("cannot read %s: %s" % (path, error))
         return 1
@@ -81,18 +88,24 @@ def main():
     for tick, pc, address, value in writes:
         who = resolve(symbols, addresses, pc) or ("PC=%08x" % pc)
         key = (address, who)
-        site = sites.setdefault(key, {"count": 0, "first": tick, "last": tick,
-                                      "values": []})
+        site = sites.setdefault(key, {"count": 0, "first": tick, "last": tick, "values": []})
         site["count"] += 1
         site["last"] = tick
         if len(site["values"]) < 8 and (not site["values"] or site["values"][-1] != value):
             site["values"].append(value)
     print("\naddr        writer                          writes      first      last  values")
-    for (address, who), site in sorted(sites.items(),
-                                       key=lambda item: (-item[1]["count"], item[0][0]))[:top]:
-        print("  %08x  %-30s %6d %10d %9d  %s" % (
-            address, who[:30], site["count"], site["first"], site["last"],
-            " ".join("%08x" % v for v in site["values"])))
+    for (address, who), site in sorted(sites.items(), key=lambda item: (-item[1]["count"], item[0][0]))[:top]:
+        print(
+            "  %08x  %-30s %6d %10d %9d  %s"
+            % (
+                address,
+                who[:30],
+                site["count"],
+                site["first"],
+                site["last"],
+                " ".join("%08x" % v for v in site["values"]),
+            )
+        )
     # Timeline: a silence shows up as an empty bin and as a large inter-write gap,
     # so the last write before each gap names the routine that stopped feeding.
     first, last = writes[0][0], writes[-1][0]
@@ -105,15 +118,16 @@ def main():
     print("\ntimeline over ticks %d..%d (%d bins, %d writes):" % (first, last, bins, len(writes)))
     for i, count in enumerate(counts):
         print("  %12d  %-38s %d" % (first + span * i // bins, "#" * (count * 38 // peak), count))
-    gaps = sorted(((writes[i][0] - writes[i - 1][0], i) for i in range(1, len(writes))),
-                  reverse=True)
+    gaps = sorted(((writes[i][0] - writes[i - 1][0], i) for i in range(1, len(writes))), reverse=True)
     print("\nlargest gaps between consecutive writes (silence candidates):")
     for gap, i in gaps[:12]:
         before, after = writes[i - 1], writes[i]
         who_b = resolve(symbols, addresses, before[1]) or ("PC=%08x" % before[1])
         who_a = resolve(symbols, addresses, after[1]) or ("PC=%08x" % after[1])
-        print("  gap %10d  %08x %-26s v=%08x  ->  %08x %-26s v=%08x" % (
-            gap, before[2], who_b[:26], before[3], after[2], who_a[:26], after[3]))
+        print(
+            "  gap %10d  %08x %-26s v=%08x  ->  %08x %-26s v=%08x"
+            % (gap, before[2], who_b[:26], before[3], after[2], who_a[:26], after[3])
+        )
     distinct = len({address for address, _ in sites})
     print("\ndistinct addresses written: %d of %d total writes" % (distinct, len(writes)))
     return 0

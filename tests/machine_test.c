@@ -3,25 +3,43 @@
 #include <stdlib.h>
 #include <string.h>
 static unsigned checks;
-#define CHECK(x) do { ++checks; if (!(x)) { fprintf(stderr, "Machine test line %d: %s\n", __LINE__, #x); exit(1); } } while (0)
+#define CHECK(x)                                                                                             \
+    do {                                                                                                     \
+        ++checks;                                                                                            \
+        if (!(x)) {                                                                                          \
+            fprintf(stderr, "Machine test line %d: %s\n", __LINE__, #x);                                     \
+            exit(1);                                                                                         \
+        }                                                                                                    \
+    } while (0)
+
 static void fixture(int identity, int overlap)
 {
     FILE *f;
-    static const uint8_t code[32] = {8,0,159,229,176,16,208,225,254,255,255,234,0,0,0,0,250,47,0,0};
-    f = fopen("build/machine-fixture.bin", "wb"); CHECK(f != NULL);
-    CHECK(fwrite(code, 1, sizeof(code), f) == sizeof(code)); CHECK(fclose(f) == 0);
-    f = fopen("build/machine-fixture.cfg", "w"); CHECK(f != NULL);
-    fputs("name=Machine fixture\nrom=0x1000000,machine-fixture.bin\nalias=0,0x1000000,32\nram=0x400000,0x100\nreset=0\naudio=silent\ndisplay=128,128\n", f);
-    if (identity) fputs("identity16=0x2ffa,0x15\n", f);
-    if (overlap) fputs("ram=0x400080,0x100\n", f);
+    static const uint8_t code[32] = {8,   0,   159, 229, 176, 16, 208, 225, 254, 255,
+                                     255, 234, 0,   0,   0,   0,  250, 47,  0,   0};
+    f = fopen("build/machine-fixture.bin", "wb");
+    CHECK(f != NULL);
+    CHECK(fwrite(code, 1, sizeof(code), f) == sizeof(code));
+    CHECK(fclose(f) == 0);
+    f = fopen("build/machine-fixture.cfg", "w");
+    CHECK(f != NULL);
+    fputs(
+        "name=Machine fixture\nrom=0x1000000,machine-fixture.bin\nalias=0,0x1000000,32\nram=0x400000,0x100\nreset=0\naudio=silent\ndisplay=128,128\n",
+        f);
+    if (identity)
+        fputs("identity16=0x2ffa,0x15\n", f);
+    if (overlap)
+        fputs("ram=0x400080,0x100\n", f);
     CHECK(fclose(f) == 0);
 }
+
 static void ram_boot_image(Machine *m)
 {
     const char *config = "build/machine-fixture.cfg";
     FILE *f;
     fixture(0, 0); /* Reuse the 32-byte instruction program as the RAM contents. */
-    f = fopen(config, "w"); CHECK(f != NULL);
+    f = fopen(config, "w");
+    CHECK(f != NULL);
     fputs("ram=0x400000,0x100,machine-fixture.bin\nreset=0x400000\n", f);
     CHECK(fclose(f) == 0);
     CHECK(machine_load(m, config, NULL, NULL));
@@ -34,194 +52,429 @@ static void ram_boot_image(Machine *m)
     CHECK(machine_load(m, config, NULL, NULL));
     CHECK(machine_step(m, 0) && m->cpu.r[0] == 0x2ffa); /* Reset restores the image. */
 
-    f = fopen(config, "w"); CHECK(f != NULL);
+    f = fopen(config, "w");
+    CHECK(f != NULL);
     fputs("ram=0x400000,0x10,machine-fixture.bin\nreset=0x400000\n", f);
     CHECK(fclose(f) == 0);
     CHECK(!machine_load(m, config, NULL, NULL));
     CHECK(!m->loaded && !m->bus.count);
 }
-typedef struct {unsigned calls;uint64_t last;} AudioProbe;
+
+static void cx805_backlights(Machine *m, int power_key)
+{
+    fixture(1, 0);
+    FILE *f = fopen("build/machine-fixture.cfg", "a");
+    CHECK(f);
+    fputs("lcd_s6b33=0xc00000,0xc80000,0\nclock=0x40b00,3900000\nintc=0x40100\n", f);
+    if (power_key)
+        fputs("clock_control=0x40902,0xc0\npmic=0x40300,0x90\nc100_power_key_ms=100\n", f);
+    else
+        fputs("gpio_port=0x4028c,0\ngpio_led=0x4028c,5,3,6\nc100_backlights=1\n"
+              "keypad=0x40800,8,4\nkey=8,0,3\n", f);
+    CHECK(!fclose(f));
+    CHECK(machine_load(m, "build/machine-fixture.cfg", NULL, NULL));
+    Bus *bus = &m->bus;
+    machine_key(m, 8, 1);
+    CHECK((bus_read(bus, 0x40804, 2) & 8) == 0);
+    CHECK(m->intc.pending == (power_key ? KEYPAD_IRQ : 0));
+    machine_key(m, 8, 0);
+    if (power_key) {
+        CHECK(bus_read(bus, 0x4028c, 2) == 0xf000 && !m->phone_io.led);
+        bus_write(bus, 0x40284, 2, 0xffbf); /* Historical test.s changes A6's input enable. */
+        CHECK(!m->phone_io.led);
+        bus_write(bus, 0x40284, 2, 0xbfff); /* FILE.S enables the output driver. */
+        CHECK(m->phone_io.led == 4);
+        bus_write(bus, 0x40d04, 2, 0x1000); /* A6 switches from GPIO to DSP clock. */
+        CHECK(!m->phone_io.led);
+        bus_write(bus, 0x40d04, 2, 0);
+        CHECK(m->phone_io.led == 4);
+        bus_write(bus, 0x40284, 2, 0xffff);
+        bus_write(bus, 0x40d0a, 2, 0x0004);
+        bus_write(bus, 0x4028a, 2, 0xfdff);
+        bus_write(bus, 0x40292, 2, 0x0202);
+        bus_write(bus, 0x40016, 2, 0x0105);
+    }
+    bus_write(bus, 0xc00000, 2, 0x2a);
+    bus_write(bus, 0xc00000, 2, 0xa8);
+    bus_write(bus, 0xc00000, 2, 0x2c);
+    bus_write(bus, 0xc00000, 2, 0x51);
+    bus_write(bus, 0xc80000, 2, 0xffff);
+    uint32_t unlit = m->pixels[0];
+    CHECK(unlit && m->lcd.backlight == LCD_BACKLIGHT_OFF && !m->c100.keypad_backlight);
+    bus_write(bus, 0x4028c, 2, 0x9090); /* A7 and A4 latched high, still inputs. */
+    bus_write(bus, 0x40290, 2, 0x1010); /* C4 latched high, still an input. */
+    CHECK(m->pixels[0] == unlit && !m->c100.keypad_backlight);
+    bus_write(bus, 0x40284, 2, 0x6fff);
+    CHECK(m->lcd.backlight == LCD_BACKLIGHT_NORMAL && m->c100.keypad_backlight);
+    uint32_t normal = m->pixels[0];
+    CHECK(normal > unlit && normal < 0xffffff);
+    bus_write(bus, 0x40288, 2, 0xefff);
+    CHECK(m->lcd.backlight == LCD_BACKLIGHT_BRIGHT && m->pixels[0] == 0xffffff);
+    bus_write(bus, 0x40d08, 2, 0x0100); /* C4 alternate function hides the GPIO latch. */
+    CHECK(m->lcd.backlight == LCD_BACKLIGHT_NORMAL && m->pixels[0] == normal);
+    bus_write(bus, 0x40a02, 2, 99);
+    bus_write(bus, 0x40a04, 4, (100u << 16) | 1);
+    bus_write(bus, 0x40a08, 4, 0x55555555);
+    bus_write(bus, 0x40a00, 2, 1);
+    if (power_key) {
+        CHECK(m->pixels[0] == normal); /* The PWM clock starts gated. */
+        bus_write(bus, 0x40902, 1, 0xd0);
+    }
+    CHECK(m->lcd.backlight == LCD_BACKLIGHT_PWM && m->pixels[0] == 0x939393);
+    CHECK(bus_read(bus, 0x40a08, 4) == 0x55555555);
+    bus_write(bus, 0x40a00, 1, 3); /* Read the rotating shift register. */
+    m->clock.nanoseconds = 513;
+    CHECK(bus_read(bus, 0x40a08, 4) == 0xaaaaaaaa);
+    bus_write(bus, 0x40a12, 2, 99);
+    bus_write(bus, 0x40a18, 4, 0xffffffff);
+    bus_write(bus, 0x40a10, 2, 1);
+    CHECK(m->pixels[0] == 0xdbdbdb);
+    bus_write(bus, 0x40d08, 2, 0); /* GPIO selection restores the full boost. */
+    CHECK(m->lcd.backlight == LCD_BACKLIGHT_BRIGHT && m->pixels[0] == 0xffffff);
+    bus_write(bus, 0x40d04, 2, 0x4000); /* A7 routes the timer instead of the GPIO latch. */
+    char board[160];
+    CHECK(machine_cx805_status(m, board, sizeof(board)) > 0 && strstr(board, "A7 Timer 2 pulse"));
+    CHECK(m->lcd.backlight == LCD_BACKLIGHT_OFF && m->c100.keypad_backlight);
+    bus_write(bus, 0x40d04, 2, 0);
+    CHECK(m->lcd.backlight == LCD_BACKLIGHT_BRIGHT);
+    bus_write(bus, 0x4028c, 2, 0x0080);
+    CHECK(m->lcd.backlight == LCD_BACKLIGHT_OFF && m->pixels[0] == unlit && m->c100.keypad_backlight);
+    bus_write(bus, 0xc00000, 2, 0x50);
+    CHECK(!m->pixels[0] && m->lcd.ram[0] == 0xffff && m->lcd.writes == 1 && !bus->faults);
+    machine_destroy(m);
+}
+
+typedef struct {
+    unsigned calls;
+    uint64_t last;
+} AudioProbe;
+
 static void java_network_config(void)
 {
-    Machine *m=calloc(1,sizeof(*m));unsigned variant,i;FILE *f;
+    Machine *m = calloc(1, sizeof(*m));
+    unsigned variant, i;
+    FILE *f;
     CHECK(m);
-    for(variant=0;variant<7;++variant){
-        fixture(0,0);f=fopen("build/machine-fixture.cfg","a");CHECK(f);
-        if(variant!=6)fputs("cellular=0x100001e,0x100001e,0x100001e,0x100001e,0x100001e,0x100001e,0x100001e,0x100001e,0x400000\ncellular_poll=0x100001e,0\n",f);
-        fputs("java_net=",f);
-        for(i=0;i<JN_COUNT-(variant==1?1u:0u);++i){uint32_t pc=0x1000000+i*2;
-            if(i==JN_BIND){if(variant==3)++pc;if(variant==4)pc=0x2000000;if(variant==5)pc=0x1000000;}
-            fprintf(f,"%s0x%x",i?",":"",pc);
+    for (variant = 0; variant < 7; ++variant) {
+        fixture(0, 0);
+        f = fopen("build/machine-fixture.cfg", "a");
+        CHECK(f);
+        if (variant != 6)
+            fputs(
+                "cellular=0x100001e,0x100001e,0x100001e,0x100001e,0x100001e,0x100001e,0x100001e,0x100001e,0x400000\ncellular_poll=0x100001e,0\n",
+                f);
+        fputs("java_net=", f);
+        for (i = 0; i < JN_COUNT - (variant == 1 ? 1u : 0u); ++i) {
+            uint32_t pc = 0x1000000 + i * 2;
+            if (i == JN_BIND) {
+                if (variant == 3)
+                    ++pc;
+                if (variant == 4)
+                    pc = 0x2000000;
+                if (variant == 5)
+                    pc = 0x1000000;
+            }
+            fprintf(f, "%s0x%x", i ? "," : "", pc);
         }
-        if(variant==2)fputs(",0x100001e",f);fputs("\n",f);CHECK(!fclose(f));
-        CHECK(machine_load(m,"build/machine-fixture.cfg",NULL,NULL)==(variant==0));
-        if(!variant){CHECK(m->network.java.first==0x1000000&&m->network.java.last==0x100001c);
-            m->cpu.cpsr|=ARM_T;m->cpu.r[15]=m->network.java.entry[JN_AVAILABLE];
-            m->cpu.r[0]=999;m->cpu.r[1]=0x400000;m->cpu.r[14]=0x100001d;
-            CHECK(machine_step(m,0)&&m->cpu.r[0]==UINT32_MAX&&bus_read(&m->bus,0x400000,2)==0x78);}
+        if (variant == 2)
+            fputs(",0x100001e", f);
+        fputs("\n", f);
+        CHECK(!fclose(f));
+        CHECK(machine_load(m, "build/machine-fixture.cfg", NULL, NULL) == (variant == 0));
+        if (!variant) {
+            CHECK(m->network.java.first == 0x1000000 && m->network.java.last == 0x100001c);
+            m->cpu.cpsr |= ARM_T;
+            m->cpu.r[15] = m->network.java.entry[JN_AVAILABLE];
+            m->cpu.r[0] = 999;
+            m->cpu.r[1] = 0x400000;
+            m->cpu.r[14] = 0x100001d;
+            CHECK(machine_step(m, 0) && m->cpu.r[0] == UINT32_MAX && bus_read(&m->bus, 0x400000, 2) == 0x78);
+        }
         machine_destroy(m);
-    }free(m);
+    }
+    free(m);
 }
-static void advance_probe(Audio *a,uint64_t ticks)
-{AudioProbe *p=a->state;++p->calls;p->last=ticks;}
+
+static void advance_probe(Audio *a, uint64_t ticks)
+{
+    AudioProbe *p = a->state;
+    ++p->calls;
+    p->last = ticks;
+}
+
 static void clock_equivalence(void)
 {
-    static const uint16_t program[]={0x6801,0x3101,0x6001,0x4209,0x2207,0x4349,0xe7f8};
-    static const uint32_t edge[]={1,3,3900000,23400000,2147483648u,2147483649u,4000000000u,UINT32_MAX};
-    Machine *m=calloc(1,sizeof(*m));uint32_t random=0xc100805;unsigned i,j;
-    CHECK(m);fixture(0,0);CHECK(machine_load(m,"build/machine-fixture.cfg",NULL,NULL));
-    memcpy(m->bus.regions[0].data,program,sizeof(program));m->cpu.cpsr|=ARM_T;m->cpu.r[0]=0x400000;
-    m->clock.attached=1;
-    for(i=0;i<64;++i){uint64_t expected_ns=0,fraction;uint32_t hz;
-        random=random*1664525u+1013904223u;hz=i<8?edge[i]:random|1u;
-        m->clock.arm_hz=hz;m->clock.clock_cycles=m->cpu.clock_cycles;
-        m->clock.nanoseconds=0;m->clock.fraction=fraction=hz-1u;
-        for(j=0;j<512;++j){uint64_t before=m->cpu.clock_cycles,scaled;
-            CHECK(machine_step(m,0));scaled=(m->cpu.clock_cycles-before)*1000000000u+fraction;
-            expected_ns+=scaled/hz;fraction=scaled%hz;
-            CHECK(m->clock.nanoseconds==expected_ns&&m->clock.fraction==fraction);
+    static const uint16_t program[] = {0x6801, 0x3101, 0x6001, 0x4209, 0x2207, 0x4349, 0xe7f8};
+    static const uint32_t edge[] = {1,           3,           3900000,     23400000,
+                                    2147483648u, 2147483649u, 4000000000u, UINT32_MAX};
+    Machine *m = calloc(1, sizeof(*m));
+    uint32_t random = 0xc100805;
+    unsigned i, j;
+    CHECK(m);
+    fixture(0, 0);
+    CHECK(machine_load(m, "build/machine-fixture.cfg", NULL, NULL));
+    memcpy(m->bus.regions[0].data, program, sizeof(program));
+    m->cpu.cpsr |= ARM_T;
+    m->cpu.r[0] = 0x400000;
+    m->clock.attached = 1;
+    for (i = 0; i < 64; ++i) {
+        uint64_t expected_ns = 0, fraction;
+        uint32_t hz;
+        random = random * 1664525u + 1013904223u;
+        hz = i < 8 ? edge[i] : random | 1u;
+        m->clock.arm_hz = hz;
+        m->clock.clock_cycles = m->cpu.clock_cycles;
+        m->clock.nanoseconds = 0;
+        m->clock.fraction = fraction = hz - 1u;
+        for (j = 0; j < 512; ++j) {
+            uint64_t before = m->cpu.clock_cycles, scaled;
+            CHECK(machine_step(m, 0));
+            scaled = (m->cpu.clock_cycles - before) * 1000000000u + fraction;
+            expected_ns += scaled / hz;
+            fraction = scaled % hz;
+            CHECK(m->clock.nanoseconds == expected_ns && m->clock.fraction == fraction);
         }
     }
-    {Audio saved=m->audio;AudioProbe p={0};const AudioOps ops={NULL,NULL,NULL,advance_probe};
-      m->audio.ops=&ops;m->audio.state=&p;
-      for(i=0;i<3;++i)CHECK(machine_step(m,0));
-      CHECK(p.calls==3&&p.last==m->cpu.cycles);m->audio=saved;}
-    machine_destroy(m);free(m);
+    {
+        Audio saved = m->audio;
+        AudioProbe p = {0};
+        const AudioOps ops = {NULL, NULL, NULL, advance_probe};
+        m->audio.ops = &ops;
+        m->audio.state = &p;
+        for (i = 0; i < 3; ++i)
+            CHECK(machine_step(m, 0));
+        CHECK(p.calls == 3 && p.last == m->cpu.cycles);
+        m->audio = saved;
+    }
+    machine_destroy(m);
+    free(m);
 }
+
 int main(void)
 {
     Machine m = {0};
-    fixture(0, 0); CHECK(machine_load(&m, "build/machine-fixture.cfg", NULL, NULL));
+    fixture(0, 0);
+    CHECK(machine_load(&m, "build/machine-fixture.cfg", NULL, NULL));
     CHECK(m.loaded && m.width == 128 && m.height == 128 && m.pixels[0] == 0);
-    CHECK(machine_step(&m, 0)); CHECK(!machine_step(&m, 0));
+    CHECK(machine_step(&m, 0));
+    CHECK(!machine_step(&m, 0));
     CHECK(m.bus.fault && m.bus.last_address == 0x2ffa && m.bus.last_width == 2 && !m.bus.last_write);
-    CHECK(m.cpu.instructions == 2); CHECK(!machine_step(&m, 0) && m.cpu.instructions == 2);
+    CHECK(m.cpu.instructions == 2);
+    CHECK(!machine_step(&m, 0) && m.cpu.instructions == 2);
     CHECK(machine_step(&m, 1) && !m.bus.fault && m.cpu.instructions == 3);
-    machine_key(&m, 9, 1); machine_key(&m, 10, 1); CHECK(m.keys == ((1u << 9) | (1u << 10)));
-    machine_key(&m, 9, 0); CHECK(m.keys == (1u << 10)); machine_key(&m, 100, 1); CHECK(m.keys == (1u << 10));
-    machine_pattern(&m, 1); CHECK(m.pixels[0] == 0xffffff && m.pixels[127] == 0); machine_pattern(&m, 0); CHECK(m.pixels[0] == 0);
-    fixture(1, 0); CHECK(machine_load(&m, "build/machine-fixture.cfg", NULL, NULL));
-    CHECK(m.keys == 0 && m.cpu.instructions == 0); CHECK(machine_step(&m, 0)); CHECK(machine_step(&m, 0));
+    CHECK(m.bus.pc == 8 && m.bus.last_pc == 4);
+    machine_key(&m, 9, 1);
+    machine_key(&m, 10, 1);
+    CHECK(m.keys == ((1u << 9) | (1u << 10)));
+    machine_key(&m, 9, 0);
+    CHECK(m.keys == (1u << 10));
+    machine_key(&m, 100, 1);
+    CHECK(m.keys == (1u << 10));
+    machine_pattern(&m, 1);
+    CHECK(m.pixels[0] == 0xffffff && m.pixels[127] == 0);
+    machine_pattern(&m, 0);
+    CHECK(m.pixels[0] == 0);
+    fixture(1, 0);
+    CHECK(machine_load(&m, "build/machine-fixture.cfg", NULL, NULL));
+    CHECK(m.keys == 0 && m.cpu.instructions == 0);
+    CHECK(machine_step(&m, 0));
+    CHECK(machine_step(&m, 0));
     CHECK(m.cpu.r[1] == 0x15 && m.bus.faults == 0);
     CHECK(bus_read(&m.bus, 0x2ffa, 1) == 0x15 && bus_read(&m.bus, 0x2ffb, 1) == 0);
-    bus_write(&m.bus, 0x2ffa, 2, 0x16); CHECK(m.bus.fault && m.bus.last_write && bus_read(&m.bus, 0x2ffa, 2) == 0x15);
-    fixture(1, 1); CHECK(!machine_load(&m, "build/machine-fixture.cfg", NULL, NULL)); CHECK(!m.loaded && m.bus.count == 0 && m.pixels == NULL);
-    machine_destroy(&m); machine_destroy(&m); CHECK(!m.loaded && m.bus.count == 0);
+    bus_write(&m.bus, 0x2ffa, 2, 0x16);
+    CHECK(m.bus.fault && m.bus.last_write && bus_read(&m.bus, 0x2ffa, 2) == 0x15);
+    fixture(1, 1);
+    CHECK(!machine_load(&m, "build/machine-fixture.cfg", NULL, NULL));
+    CHECK(!m.loaded && m.bus.count == 0 && m.pixels == NULL);
+    machine_destroy(&m);
+    machine_destroy(&m);
+    CHECK(!m.loaded && m.bus.count == 0);
     {
         FILE *f, *trace;
         char text[512];
         size_t n;
         uint8_t second[32] = {99};
         fixture(1, 0);
-        f = fopen("build/machine-fixture.cfg", "a"); CHECK(f != NULL);
-        fputs("unplaced_rom=machine-fixture.bin\n", f); CHECK(fclose(f) == 0);
-        f = fopen("build/second-fixture.bin", "wb"); CHECK(f != NULL);
-        CHECK(fwrite(second, 1, sizeof(second), f) == sizeof(second)); CHECK(fclose(f) == 0);
+        f = fopen("build/machine-fixture.cfg", "a");
+        CHECK(f != NULL);
+        fputs("unplaced_rom=machine-fixture.bin\n", f);
+        CHECK(fclose(f) == 0);
+        f = fopen("build/second-fixture.bin", "wb");
+        CHECK(f != NULL);
+        CHECK(fwrite(second, 1, sizeof(second), f) == sizeof(second));
+        CHECK(fclose(f) == 0);
         CHECK(machine_load_pair(&m, "build/machine-fixture.cfg", NULL, "build/second-fixture.bin", NULL));
         CHECK(m.unplaced_size == 32 && m.unplaced_rom[0] == 99);
         CHECK(bus_read(&m.bus, 0x1000000, 1) == 8); /* Second image must not replace the first. */
         CHECK(bus_read(&m.bus, 0x2000000, 1) == 0 && m.bus.fault); /* No guessed mapping. */
-        trace = tmpfile(); CHECK(trace != NULL);
-        m.bus.access_log = trace; m.bus.watch_start = 0x2ffa; m.bus.watch_end = 0x2ffc;
+        trace = tmpfile();
+        CHECK(trace != NULL);
+        m.bus.access_log = trace;
+        m.bus.watch_start = 0x2ffa;
+        m.bus.watch_end = 0x2ffc;
         CHECK(bus_read(&m.bus, 0x2ffa, 2) == 0x15);
         bus_write(&m.bus, 0x2ffa, 2, 0x16);
         (void)bus_read(&m.bus, 0x2ffc, 2);
         CHECK(fseek(trace, 0, SEEK_SET) == 0);
-        n = fread(text, 1, sizeof(text) - 1, trace); text[n] = 0;
+        n = fread(text, 1, sizeof(text) - 1, trace);
+        text[n] = 0;
         CHECK(strstr(text, "R16 00002ffa value=00000015 device") != NULL);
         CHECK(strstr(text, "W16 00002ffa value=00000016 device") != NULL);
         CHECK(strstr(text, "00002ffc") == NULL);
-        m.bus.access_log = NULL; CHECK(fclose(trace) == 0);
+        m.bus.access_log = NULL;
+        CHECK(fclose(trace) == 0);
         CHECK(!machine_load_pair(&m, "build/machine-fixture.cfg", NULL, "build/no-such-firmware.bin", NULL));
         CHECK(!m.loaded && !m.unplaced_rom && !m.unplaced_size && !m.bus.count);
         CHECK(machine_load(&m, "build/machine-fixture.cfg", NULL, NULL));
         CHECK(m.unplaced_size == 32 && m.unplaced_rom[0] == 8);
-        machine_destroy(&m); CHECK(!m.unplaced_rom && !m.unplaced_size);
+        machine_destroy(&m);
+        CHECK(!m.unplaced_rom && !m.unplaced_size);
     }
     {
         FILE *f;
         fixture(1, 0);
-        f = fopen("build/machine-fixture.cfg", "a"); CHECK(f != NULL);
-        fputs("intc=0x40100\nregister32=0x40900,0\nirq_gate=0x40902,0x80\n", f); CHECK(fclose(f) == 0);
+        f = fopen("build/machine-fixture.cfg", "a");
+        CHECK(f != NULL);
+        fputs("intc=0x40100\nregister32=0x40900,0\nirq_gate=0x40902,0x80\n", f);
+        CHECK(fclose(f) == 0);
         CHECK(machine_load(&m, "build/machine-fixture.cfg", NULL, NULL));
         CHECK(m.irq_gate_register != NULL);
-        m.intc.enabled = m.intc.pending = 8; m.cpu.cpsr &= ~0x80u;
-        CHECK(machine_step(&m, 0)); CHECK(m.cpu.instructions == 1 && m.cpu.r[15] == 4 && !m.cpu.irq);
+        m.intc.enabled = m.intc.pending = 8;
+        m.cpu.cpsr &= ~0x80u;
+        CHECK(machine_step(&m, 0));
+        CHECK(m.cpu.instructions == 1 && m.cpu.r[15] == 4 && !m.cpu.irq);
         CHECK(m.intc.pending == 8); /* Critical section must not discard the source. */
         bus_write(&m.bus, 0x40902, 2, 0x80);
-        m.cellular.stage=4; /* Native HLE is in flight; keep IRQ latched. */
-        CHECK(machine_step(&m,0));CHECK(m.cpu.instructions==2&&m.cpu.r[15]==8&&!m.cpu.irq);
-        CHECK(m.intc.pending==8);m.cellular.stage=0;
-        CHECK(machine_step(&m, 0)); CHECK(m.cpu.instructions == 2 && m.cpu.r[15] == 0x18);
+        m.cellular.stage = 4; /* Native HLE is in flight; keep IRQ latched. */
+        CHECK(machine_step(&m, 0));
+        CHECK(m.cpu.instructions == 2 && m.cpu.r[15] == 8 && !m.cpu.irq);
+        CHECK(m.intc.pending == 8);
+        m.cellular.stage = 0;
+        CHECK(machine_step(&m, 0));
+        CHECK(m.cpu.instructions == 2 && m.cpu.r[15] == 0x18);
         CHECK((m.cpu.cpsr & 31) == 0x12 && m.cpu.r[14] == 12 && m.intc.pending == 8);
         CHECK(m.bus.faults == 0);
         fixture(1, 0);
-        f = fopen("build/machine-fixture.cfg", "a"); CHECK(f != NULL);
-        fputs("intc=0x40100\nirq_gate=0x40902,0x80\n", f); CHECK(fclose(f) == 0);
-        CHECK(!machine_load(&m, "build/machine-fixture.cfg", NULL, NULL)); CHECK(!m.loaded && !m.bus.count);
+        f = fopen("build/machine-fixture.cfg", "a");
+        CHECK(f != NULL);
+        fputs("intc=0x40100\nirq_gate=0x40902,0x80\n", f);
+        CHECK(fclose(f) == 0);
+        CHECK(!machine_load(&m, "build/machine-fixture.cfg", NULL, NULL));
+        CHECK(!m.loaded && !m.bus.count);
         machine_destroy(&m);
     }
     {
-        FILE *f;uint64_t before;
-        fixture(1,0);f=fopen("build/machine-fixture.cfg","a");CHECK(f!=NULL);
-        fputs("intc=0x40100\nclock=0x40b00,3900000\nclock_mode=0x0b01,23400000,46800000\nperiodic_time_irq=26,1000\n",f);CHECK(fclose(f)==0);
-        CHECK(machine_load(&m,"build/machine-fixture.cfg",NULL,NULL));CHECK(m.clock.attached&&m.periodic_time);
-        CHECK(m.clock.arm_hz==3900000&&m.clock.dsp_hz==3900000);
-        bus_write(&m.bus,0x40b02,2,0x0b01);bus_write(&m.bus,0x40b04,2,15);
-        CHECK(m.clock.arm_hz==23400000&&m.clock.dsp_hz==46800000&&!m.clock.unknown);
-        CHECK(bus_read(&m.bus,0x40b02,2)==0x0b01&&bus_read(&m.bus,0x40b04,1)==15);
-        CHECK(machine_step(&m,0));CHECK(m.cpu.clock_cycles==3&&m.clock.nanoseconds==128);
-        CHECK(machine_step(&m,0));CHECK(m.clock.nanoseconds==256);
-        m.intc.enabled=1u<<26;CHECK(machine_step(&m,0));
-        while(m.clock.nanoseconds<1200)CHECK(machine_step(&m,0));
-        CHECK(m.intc.events==1&&(m.intc.pending&(1u<<26)));
-        before=m.clock.nanoseconds;bus_write(&m.bus,0x40b04,2,0);CHECK(machine_step(&m,0));
-        CHECK(m.clock.arm_hz==3900000&&m.clock.nanoseconds-before>=769);
-        bus_write(&m.bus,0x40b02,2,0xdead);bus_write(&m.bus,0x40b04,2,15);
-        CHECK(m.clock.unknown&&m.clock.arm_hz==3900000);CHECK(m.bus.faults==0);machine_destroy(&m);
+        FILE *f;
+        uint64_t before;
+        fixture(1, 0);
+        f = fopen("build/machine-fixture.cfg", "a");
+        CHECK(f != NULL);
+        fputs(
+            "intc=0x40100\nclock=0x40b00,3900000\nclock_mode=0x0b01,23400000,46800000\nperiodic_time_irq=26,1000\n",
+            f);
+        CHECK(fclose(f) == 0);
+        CHECK(machine_load(&m, "build/machine-fixture.cfg", NULL, NULL));
+        CHECK(m.clock.attached && m.periodic_time);
+        CHECK(m.clock.arm_hz == 3900000 && m.clock.dsp_hz == 3900000);
+        bus_write(&m.bus, 0x40b02, 2, 0x0b01);
+        bus_write(&m.bus, 0x40b04, 2, 15);
+        CHECK(m.clock.arm_hz == 23400000 && m.clock.dsp_hz == 46800000 && !m.clock.unknown);
+        CHECK(bus_read(&m.bus, 0x40b02, 2) == 0x0b01 && bus_read(&m.bus, 0x40b04, 1) == 15);
+        CHECK(machine_step(&m, 0));
+        CHECK(m.cpu.clock_cycles == 3 && m.clock.nanoseconds == 128);
+        CHECK(machine_step(&m, 0));
+        CHECK(m.clock.nanoseconds == 256);
+        m.intc.enabled = 1u << 26;
+        CHECK(machine_step(&m, 0));
+        while (m.clock.nanoseconds < 1200)
+            CHECK(machine_step(&m, 0));
+        CHECK(m.intc.events == 1 && (m.intc.pending & (1u << 26)));
+        before = m.clock.nanoseconds;
+        bus_write(&m.bus, 0x40b04, 2, 0);
+        CHECK(machine_step(&m, 0));
+        CHECK(m.clock.arm_hz == 3900000 && m.clock.nanoseconds - before >= 769);
+        bus_write(&m.bus, 0x40b02, 2, 0xdead);
+        bus_write(&m.bus, 0x40b04, 2, 15);
+        CHECK(m.clock.unknown && m.clock.arm_hz == 3900000);
+        CHECK(m.bus.faults == 0);
+        machine_destroy(&m);
     }
     {
-        FILE *f;uint32_t flags;unsigned i;
-        fixture(0,0);f=fopen("build/machine-fixture.cfg","a");CHECK(f!=NULL);
-        fputs("ram=0x400100,0x300\njava_buffers=0x1000000,0x1000002,0x400100,0x8000000,0x40000\n",f);
-        CHECK(!fclose(f));CHECK(machine_load(&m,"build/machine-fixture.cfg",NULL,NULL));
-        CHECK(!m.java_extended&&!m.java_buffer_data);
-        m.cpu.cpsr|=ARM_T;m.cpu.r[15]=m.java_buffer_get;
-        CHECK(machine_step(&m,0)&&!m.java_buffer_data); /* Off really executes ROM. */
-        m.java_extended=1;flags=m.cpu.cpsr;
-        for(i=0;i<3;++i){
-            m.cpu.r[0]=i;m.cpu.r[14]=0x1000011;m.cpu.r[15]=m.java_buffer_get;
-            CHECK(machine_step(&m,0));CHECK(m.cpu.r[0]==0x40000&&m.cpu.r[15]==0x1000010);
-            CHECK(m.cpu.cpsr==flags&&m.java_buffer_data);
-            m.java_buffer_data[i*0x40000]=0x55;m.java_buffer_data[(i+1)*0x40000-1]=0xaa;
-            m.cpu.r[0]=i;m.cpu.r[15]=m.java_buffer_set;CHECK(machine_step(&m,0));
-            CHECK(m.cpu.r[0]==1&&m.cpu.r[15]==0x1000010&&m.cpu.cpsr==flags);
-            CHECK(bus_read(&m.bus,m.java_buffer_table+i*0x98+0x94,4)==0x8000000+i*0x40000);
-            CHECK(!m.java_buffer_data[i*0x40000]&&!m.java_buffer_data[(i+1)*0x40000-1]);
+        FILE *f;
+        uint32_t flags;
+        unsigned i;
+        fixture(0, 0);
+        f = fopen("build/machine-fixture.cfg", "a");
+        CHECK(f != NULL);
+        fputs("ram=0x400100,0x300\njava_buffers=0x1000000,0x1000002,0x400100,0x8000000,0x40000\n", f);
+        CHECK(!fclose(f));
+        CHECK(machine_load(&m, "build/machine-fixture.cfg", NULL, NULL));
+        CHECK(!m.java_extended && !m.java_buffer_data);
+        m.cpu.cpsr |= ARM_T;
+        m.cpu.r[15] = m.java_buffer_get;
+        CHECK(machine_step(&m, 0) && !m.java_buffer_data); /* Off really executes ROM. */
+        m.java_extended = 1;
+        flags = m.cpu.cpsr;
+        for (i = 0; i < 3; ++i) {
+            m.cpu.r[0] = i;
+            m.cpu.r[14] = 0x1000011;
+            m.cpu.r[15] = m.java_buffer_get;
+            CHECK(machine_step(&m, 0));
+            CHECK(m.cpu.r[0] == 0x40000 && m.cpu.r[15] == 0x1000010);
+            CHECK(m.cpu.cpsr == flags && m.java_buffer_data);
+            m.java_buffer_data[i * 0x40000] = 0x55;
+            m.java_buffer_data[(i + 1) * 0x40000 - 1] = 0xaa;
+            m.cpu.r[0] = i;
+            m.cpu.r[15] = m.java_buffer_set;
+            CHECK(machine_step(&m, 0));
+            CHECK(m.cpu.r[0] == 1 && m.cpu.r[15] == 0x1000010 && m.cpu.cpsr == flags);
+            CHECK(bus_read(&m.bus, m.java_buffer_table + i * 0x98 + 0x94, 4) == 0x8000000 + i * 0x40000);
+            CHECK(!m.java_buffer_data[i * 0x40000] && !m.java_buffer_data[(i + 1) * 0x40000 - 1]);
         }
-        m.cpu.r[0]=3;m.cpu.r[15]=m.java_buffer_get;CHECK(machine_step(&m,0));
-        CHECK(m.cpu.r[15]==m.java_buffer_get+2); /* Small native handles untouched. */
-        machine_destroy(&m);CHECK(!m.java_buffer_data);
-        fixture(0,0);f=fopen("build/machine-fixture.cfg","a");CHECK(f!=NULL);
-        fputs("java_buffers=0x1000000,0x1000002,0x400000,0x400000,0x100000\n",f);
-        CHECK(!fclose(f));CHECK(!machine_load(&m,"build/machine-fixture.cfg",NULL,NULL));
+        m.cpu.r[0] = 3;
+        m.cpu.r[15] = m.java_buffer_get;
+        CHECK(machine_step(&m, 0));
+        CHECK(m.cpu.r[15] == m.java_buffer_get + 2); /* Small native handles untouched. */
+        machine_destroy(&m);
+        CHECK(!m.java_buffer_data);
+        fixture(0, 0);
+        f = fopen("build/machine-fixture.cfg", "a");
+        CHECK(f != NULL);
+        fputs("java_buffers=0x1000000,0x1000002,0x400000,0x400000,0x100000\n", f);
+        CHECK(!fclose(f));
+        CHECK(!machine_load(&m, "build/machine-fixture.cfg", NULL, NULL));
         machine_destroy(&m);
     }
-    {FILE *f;
-        fixture(0,0);f=fopen("build/machine-fixture.cfg","a");CHECK(f);
-        fputs("irom_version=0x81fe0,0xffff,0x1000010\nirom_vector=0x80030,0x81fe1\n",f);CHECK(!fclose(f));
-        CHECK(machine_load(&m,"build/machine-fixture.cfg",NULL,NULL));
-        CHECK(bus_read(&m.bus,0x80030,4)==0x81fe1&&bus_read(&m.bus,0x80032,2)==8);
-        bus_write(&m.bus,0x80030,4,0);CHECK(m.bus.fault&&bus_read(&m.bus,0x80030,4)==0x81fe1);
+    {
+        FILE *f;
+        fixture(0, 0);
+        f = fopen("build/machine-fixture.cfg", "a");
+        CHECK(f);
+        fputs("irom_version=0x81fe0,0xffff,0x1000010\nirom_vector=0x80030,0x81fe1\n", f);
+        CHECK(!fclose(f));
+        CHECK(machine_load(&m, "build/machine-fixture.cfg", NULL, NULL));
+        CHECK(bus_read(&m.bus, 0x80030, 4) == 0x81fe1 && bus_read(&m.bus, 0x80032, 2) == 8);
+        bus_write(&m.bus, 0x80030, 4, 0);
+        CHECK(m.bus.fault && bus_read(&m.bus, 0x80030, 4) == 0x81fe1);
         machine_destroy(&m);
-        fixture(0,0);f=fopen("build/machine-fixture.cfg","a");CHECK(f);
-        fputs("irom_vector=0x80030,0x81fe1\n",f);CHECK(!fclose(f));
-        CHECK(!machine_load(&m,"build/machine-fixture.cfg",NULL,NULL)); /* no backing HLE */
-        fixture(0,0);f=fopen("build/machine-fixture.cfg","a");CHECK(f);
-        fputs("irom_service=0x8077c,memcpy\nirom_vector=0x8003c,0x8077c\n",f);CHECK(!fclose(f));
-        CHECK(!machine_load(&m,"build/machine-fixture.cfg",NULL,NULL)); /* not Thumb */
+        fixture(0, 0);
+        f = fopen("build/machine-fixture.cfg", "a");
+        CHECK(f);
+        fputs("irom_vector=0x80030,0x81fe1\n", f);
+        CHECK(!fclose(f));
+        CHECK(!machine_load(&m, "build/machine-fixture.cfg", NULL, NULL)); /* no backing HLE */
+        fixture(0, 0);
+        f = fopen("build/machine-fixture.cfg", "a");
+        CHECK(f);
+        fputs("irom_service=0x8077c,memcpy\nirom_vector=0x8003c,0x8077c\n", f);
+        CHECK(!fclose(f));
+        CHECK(!machine_load(&m, "build/machine-fixture.cfg", NULL, NULL)); /* not Thumb */
     }
     ram_boot_image(&m);
-    clock_equivalence();java_network_config();
-    printf("Machine/frontend backend: %u checks passed.\n", checks); return 0;
+    cx805_backlights(&m, 0);
+    cx805_backlights(&m, 1);
+    clock_equivalence();
+    java_network_config();
+    printf("Machine/frontend backend: %u checks passed.\n", checks);
+    return 0;
 }

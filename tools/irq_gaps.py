@@ -7,6 +7,7 @@ markers shows whether the emulated timer cadence matches.
 
 Usage: python tools\\irq_gaps.py <out.log> [ticks_per_sec]
 """
+
 import sys
 from collections import Counter
 
@@ -33,8 +34,7 @@ def main():
     other = sum(v for k, v in buckets.items() if k > 60)
     if other:
         print("   >60 ms : %d" % other)
-    print("first 12 intervals (ms): %s" % ", ".join(
-        "%.2f" % (g / hz * 1000) for g in gaps[:12]))
+    print("first 12 intervals (ms): %s" % ", ".join("%.2f" % (g / hz * 1000) for g in gaps[:12]))
 
 
 if __name__ == "__main__":

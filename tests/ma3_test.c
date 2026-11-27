@@ -3,18 +3,41 @@
 #include <string.h>
 
 enum { SELECT = 0x200000, DATA = 0x200004, IRQ = 0x800000 };
+
 static const uint64_t sequence_tick = UINT64_C(865) * 1157;
 static Bus bus;
 static Intc intc;
 static Ma3 chip;
 static unsigned checks;
 
-#define CHECK(x) do { ++checks; if (!(x)) { fprintf(stderr, "MA-3 line %d: %s\n", __LINE__, #x); exit(1); } } while (0)
+#define CHECK(x)                                                                                             \
+    do {                                                                                                     \
+        ++checks;                                                                                            \
+        if (!(x)) {                                                                                          \
+            fprintf(stderr, "MA-3 line %d: %s\n", __LINE__, #x);                                             \
+            exit(1);                                                                                         \
+        }                                                                                                    \
+    } while (0)
 
-static void select_port(unsigned value) { bus_write(&bus, SELECT, 1, value); }
-static void data(unsigned value) { bus_write(&bus, DATA, 1, value); }
-static unsigned read_data(void) { return bus_read(&bus, DATA, 1); }
-static unsigned status(void) { return bus_read(&bus, SELECT, 1); }
+static void select_port(unsigned value)
+{
+    bus_write(&bus, SELECT, 1, value);
+}
+
+static void data(unsigned value)
+{
+    bus_write(&bus, DATA, 1, value);
+}
+
+static unsigned read_data(void)
+{
+    return bus_read(&bus, DATA, 1);
+}
+
+static unsigned status(void)
+{
+    return bus_read(&bus, SELECT, 1);
+}
 
 static void field(unsigned value)
 {
@@ -61,7 +84,8 @@ static void ram(unsigned address, const uint8_t *bytes, unsigned length)
     field(address);
     data(length & 127);
     data((length >> 7) | 128);
-    for (i = 0; i < length; ++i) data(bytes[i]);
+    for (i = 0; i < length; ++i)
+        data(bytes[i]);
 }
 
 static void control(unsigned bits)
@@ -112,6 +136,28 @@ static void ports(void)
 
     control(0x80);
     CHECK(read_parameter(3, 0) == 0 && read_parameter(0x4021, 0) == 0);
+
+    select_port(0x0e);
+    data(4);
+    select_port(0x0d);
+    data(1);
+    CHECK(ma3_motor_on(&chip) && !chip.led_on);
+    select_port(4);
+    data(1); /* An unrelated bank cannot change the motor. */
+    select_port(0x0d);
+    data(0);
+    CHECK(ma3_motor_on(&chip));
+    select_port(4);
+    data(0);
+    select_port(0x0d);
+    data(0);
+    CHECK(!ma3_motor_on(&chip));
+    parameter(0x147, 1); /* Also sent by the firmware's motor-off path. */
+    CHECK(!ma3_motor_on(&chip));
+    select_port(0x0d);
+    data(1);
+    control(0x80);
+    CHECK(!ma3_motor_on(&chip));
 }
 
 static void sequence(void)
@@ -136,7 +182,9 @@ static void sequence(void)
 
     /* Clear drops a partial packet. An explicit reset rebases the delay of
        the first fresh packet, even when the sequencer is already running. */
-    select_port(1); data(0x8a); data(0x5a);
+    select_port(1);
+    data(0x8a);
+    data(0x5a);
     control(0x28);
     CHECK(chip.partial_drops == drops + 1 && (status() & 2));
     delayed(100, 0x15a, 0x43);
@@ -173,7 +221,8 @@ static void interrupts(void)
     CHECK(!read_data());
 
     parameter(0x160, 1);
-    for (i = 0; i < 17; ++i) delayed(10, 0x166, 0);
+    for (i = 0; i < 17; ++i)
+        delayed(10, 0x166, 0);
     advance(2000000);
     select_port(0x80);
     CHECK(!read_data() && !intc.pending); /* Still above the 64-byte threshold. */
@@ -215,24 +264,32 @@ static void playback(void)
     /* ADPCM: 63 samples in 10 ms. RBO1 reports the byte containing sample 63;
        RBO3 still returns the reset value. Muted runs must advance the cursor. */
     const uint8_t descriptor[] = {0xfa, 0, 0, 0xf0, 0xf0, 0, 0, 0x40, 0x20, 0, 0, 1, 0};
-    const uint8_t fm[] = {0x78, 0x45, 0,0,0,0,0,0,0, 2,0xf0,0xf0,0,0,0x10,0,
-                          0,0,0,0,0,0,0, 0,0,0,0,0,0,0};
+    const uint8_t fm[] = {0x78, 0x45, 0, 0, 0, 0, 0, 0, 0, 2, 0xf0, 0xf0, 0, 0, 0x10,
+                          0,    0,    0, 0, 0, 0, 0, 0, 0, 0, 0,    0,    0, 0, 0};
     control(0x80);
     ram(0x4000, descriptor, sizeof(descriptor));
-    parameter(0x60, 0x40); parameter(0x61, 0);
-    parameter(0x63, 2); parameter(0x64, 0x40); parameter(0x65, 0x40);
+    parameter(0x60, 0x40);
+    parameter(0x61, 0);
+    parameter(0x63, 2);
+    parameter(0x64, 0x40);
+    parameter(0x65, 0x40);
     advance(10000000);
     CHECK(chip.synth.pcm[0].phase >> 16 == 63);
     CHECK(read_parameter(0x14a, 0) == 0x42 && read_parameter(0x14a, 2) == 0x40);
 
     control(0x80);
     CHECK(ma3_open_audio(&chip, 0, NULL));
-    select_port(7); data(31);
+    select_port(7);
+    data(31);
     ram(0x4000, fm, sizeof(fm));
     /* Algorithm 5 has two independent pairs; operator 2 is a carrier.
        Exercise the second FM bank with just that carrier enabled. */
-    parameter(0xe0, 0x40); parameter(0xe1, 0); parameter(0xe2, 0x7c);
-    parameter(0xe3, 0x2c); parameter(0xe4, 0x4a); parameter(0xe5, 0x40);
+    parameter(0xe0, 0x40);
+    parameter(0xe1, 0);
+    parameter(0xe2, 0x7c);
+    parameter(0xe3, 0x2c);
+    parameter(0xe4, 0x4a);
+    parameter(0xe5, 0x40);
     advance(10000000);
     CHECK(chip.stats.frames == 480 && chip.stats.nonzero > 500 && chip.stats.peak > 0);
     parameter(0xe5, 0);
@@ -262,7 +319,9 @@ static void limits(void)
     control(0x80);
     select_port(1);
     for (i = 0; i < MA3_FIFO_BYTES / 4; ++i) {
-        data(0x80); field(0x166); data(0x80);
+        data(0x80);
+        field(0x166);
+        data(0x80);
     }
     CHECK((status() & 8) && !*chip.error);
     data(0x80);

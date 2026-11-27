@@ -23,6 +23,8 @@ to five bits by the driver, limiting this contract to 1996..2027.
 | `0A` | Year minus configured origin |
 | `0C` | Calendar-reset/control register |
 | `12..1A` | Alarm comparison registers; disabled value `FFFF` |
+| `1C` | External interrupt control |
+| `20..3E` | Sixteen halfword storage registers |
 
 ## Implementation
 
@@ -30,9 +32,9 @@ to five bits by the driver, limiting this contract to 1996..2027.
 Gregorian calendar rollover and a 32-year hardware year wrap. Models declare
 `rtc=0x00040080,1996`; no C100 addresses are hardcoded into the shared CPU.
 Ordinary deterministic CLI runs use emulated nanoseconds, not host time.
-Alarm registers retain writes/readback; alarm interrupt delivery is not yet
-implemented. Battery-backed reset metadata beyond this 32-byte register block
-is not fabricated or mapped by the RTC module.
+When the minute through year match, the RTC latches IRQ 2 once per matching
+minute. The external control and storage registers retain writes during
+emulated sleep. See [alarm wiring and power-on limits](c100-clock.md#standalone-timers-sleep-and-rtc-alarm).
 
 The frontend's host-sync mode supplies `GetLocalTime` samples once per second,
 including while paused, under the existing machine mutex. The RTC uses that
